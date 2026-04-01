@@ -1,0 +1,35 @@
+TODO List
+
++Use Markov model to find regime(Hidden Markov Model HMM)
++build XGBoost and LSTM based on feature fusion to create ensemble model
++train the ensemble model on each of the separate regimes
+Prediction first finds out the current regime, then uses appropriate model
+seasonality trends
+heavier focus on trend reversals***
+run backtests inbetween the run on walkforward validation
+
+time series momentum(historical data)
+cross sectional momentum(same sector)
+
+
+Research papers
+LSTM/XGBoost - https://dl.acm.org/doi/epdf/10.1145/3785706.3785707
+HMM - https://arxiv.org/pdf/2310.03775
+
+1️⃣ Walk-forward retraining (proper backtesting)
+2️⃣ Regime-specific XGBoost models (huge accuracy improvement)
+
+
+BACKTEST Indicators
+SHARPE
+SORTINO
+CALMAR
+DRAWDOWN
+WIN RATE
+TURNOVER
+ALPHA/BETA
+
+VALUE at RISK
+VOLATILITY
+
+EXPOSURE
