@@ -16,7 +16,7 @@ def run_walkforward_backtest(
     # -------------------------------
     # LOAD DATA
     # -------------------------------
-    data = get_feature_data(ticker)
+    data, hmm_model, down_state, up_state = get_feature_data(ticker)
 
     n = len(data)
     print("Total dataset size:", n)
@@ -25,7 +25,7 @@ def run_walkforward_backtest(
     train_end = int(n * train_start)
     step = int(n * step_size)
 
-    engine = BacktestEngine(initial_capital=initial_capital)
+    engine = BacktestEngine(initial_capital=initial_capital, hmm_model=hmm_model, down_state=down_state, up_state=up_state)
 
     all_predictions = []
 

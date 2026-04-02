@@ -148,7 +148,7 @@ def get_feature_data(ticker = "AAPL"):
         regime_probs = hmm_model.predict_proba(returns)
         X_with_regime = np.hstack([data, regime_probs])
         print(X_with_regime)
-        return(data)
+        return data, hmm_model, down_state, up_state
 
     check_stationarity(stock_data['Close'])
     check_stationarity(stock_data['Close'].diff(periods=1).dropna())
@@ -176,7 +176,7 @@ def get_feature_data(ticker = "AAPL"):
     stock_data.drop("Upper_Band", axis=1, inplace=True)
     stock_data.drop("Lower_Band", axis=1, inplace=True)
 
-    stock_data = HMM_train(stock_data)
+    stock_data, hmm_model, down_state, up_state = HMM_train(stock_data)
     stock_data.drop("log_return", axis=1, inplace=True)
     stock_data["return_lag1"] = stock_data["return"].shift(1)
     stock_data["return_lag2"] = stock_data["return"].shift(2)
@@ -384,4 +384,4 @@ def get_feature_data(ticker = "AAPL"):
     print("Final dataset shape:", stock_data.shape)
     print("Final columns:", stock_data.columns[-5:])
 
-    return stock_data
+    return stock_data, hmm_model, down_state, up_state
