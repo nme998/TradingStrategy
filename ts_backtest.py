@@ -40,7 +40,7 @@ class BacktestEngine:
         self.prev_price = None
 
         # --- PARAMETERS ---
-        self.entry_threshold = 1.0   # IMPORTANT: now works on normalized signal
+        self.entry_threshold = 1.0   
         self.exit_threshold = 0.5
         self.min_hold_days = 1
         self.max_hold_days = 5
@@ -82,6 +82,39 @@ class BacktestEngine:
             return 0
 
         return signal / std
+    
+    def get_bollinger(self):
+        if len(self.price_history) < 20:
+            return None
+
+        window = self.price_history[-20:]
+        mean   = np.mean(window)
+        std    = np.std(window)
+
+        upper = mean + 2 * std
+        lower = mean - 2 * std
+
+        return mean, upper, lower
+    
+    def get_atr(self, high, low):
+
+        if len(self.price_history) < 20:
+            return 0
+
+        trs = []
+
+        for i in range(1, len(self.price_history)):
+            prev_close = self.price_history[i - 1]
+
+            tr = max(
+                high - low,
+                abs(high - prev_close),
+                abs(low - prev_close)
+            )
+
+            trs.append(tr)
+
+        return np.mean(trs[-14:])
 
     def compute_confidence(self, prediction):
         signs = np.sign(prediction)
@@ -93,9 +126,9 @@ class BacktestEngine:
 
     def is_consistent(self, prediction):
         return (
-            (prediction[0] > 0 and prediction[1] > 0 and prediction[2] > 0)
+            (prediction[0] > 0 or prediction[1] > 0 and prediction[2] > 0)
             or
-            (prediction[0] < 0 and prediction[1] < 0 and prediction[2] < 0)
+            (prediction[0] < 0 or prediction[1] < 0 and prediction[2] < 0)
         )
 
     def trend_filter(self, price):
@@ -161,17 +194,17 @@ class BacktestEngine:
     # TRADE MANAGEMENT
     # -------------------------------
 
-    def open_trade(self, price, signal, confidence, date):
+    def open_trade(self, price, atr,  signal, confidence, date):
 
         direction = 1 if signal > 0 else -1
 
         if direction == 1:
-            stop_loss = price * (1 - 0.035)
-            take_profit = price * (1 + 0.05)
+            stop_loss = price - 1.5 * atr
+            take_profit = price + 2.5 * atr
         else:
-            stop_loss = price * (1 + 0.035)
-            take_profit = price * (1 - 0.05)
-
+            stop_loss = price + 1.5 * atr
+            take_profit = price - 2.5 * atr
+        
         size = self.calculate_position_size(price, stop_loss, confidence)
 
         if size <= 0:
@@ -233,33 +266,44 @@ class BacktestEngine:
                 self.open_trades.remove(trade)
                 continue
 
-            # Time exit
-            if trade.holding_days >= self.max_hold_days:
-                self.stats["exits_time"] += 1
-                self.close_trade(trade, price, date, "TIME")
-                self.open_trades.remove(trade)
-                continue
-
-            # Signal exit
             if trade.holding_days >= self.min_hold_days:
-                if trade.direction == 1 and signal < -self.exit_threshold:
+
+                trade_score = signal * trade.direction
+
+                # --- HARD REVERSAL ---
+                if trade_score < -self.exit_threshold:
                     self.stats["exits_signal"] += 1
-                    self.close_trade(trade, price, date, "SIG")
+                    self.close_trade(trade, price, date, "REV")
                     self.open_trades.remove(trade)
                     continue
 
-                if trade.direction == -1 and signal > self.exit_threshold:
+                # --- WEAK SIGNAL ---
+                if abs(signal) < self.exit_threshold * 0.5:
                     self.stats["exits_signal"] += 1
-                    self.close_trade(trade, price, date, "SIG")
+                    self.close_trade(trade, price, date, "WEAK")
                     self.open_trades.remove(trade)
                     continue
+
+                # --- PROFIT PROTECTION ---
+                unrealized_pnl = (
+                    (price - trade.entry_price)
+                    * trade.size
+                    * trade.direction
+                )
+
+                if unrealized_pnl > 0:
+                    if abs(signal) < self.exit_threshold:
+                        self.stats["exits_signal"] += 1
+                        self.close_trade(trade, price, date, "PROTECT")
+                        self.open_trades.remove(trade)
+                        continue
 
     # -------------------------------
     # STEP FUNCTION
     # -------------------------------
 
-    def step(self, price, prediction, date):
-
+    def step(self, price, high, low, prediction, date):
+        atr = self.get_atr(high, low)
         # -------------------------------
         # SIGNAL PIPELINE
         # -------------------------------
@@ -294,7 +338,7 @@ class BacktestEngine:
         # -------------------------------
         # GET Z-SCORE (for mean reversion)
         # -------------------------------
-        zscore = self.get_zscore(price)
+        #zscore = self.get_zscore(price)
 
         # -------------------------------
         # MOMENTUM STRATEGY (HIGH VOL)
@@ -324,7 +368,10 @@ class BacktestEngine:
             # Risk control
             if self.current_total_risk() < self.max_total_risk:
 
-                self.open_trade(price, signal, confidence, date)
+                self.open_trade(price, atr, signal, confidence, date)
+
+                if abs(signal) > self.entry_threshold * 1.5:
+                    self.open_trade(price, atr, signal, confidence, date)
 
                 self.stats["entries_total"] += 1
                 if signal > 0:
@@ -335,32 +382,41 @@ class BacktestEngine:
         # -------------------------------
         # MEAN REVERSION STRATEGY (LOW VOL)
         # -------------------------------
+        '''
         elif regime == "low_vol":
+            ma, upper, lower = self.get_bollinger()
 
-            # Only trade extremes
-            if zscore > 1.5:
-                direction = -1   
-            elif zscore < -1.5:
-                direction = 1  
-            else:
+            if ma is None:
+                self.update_equity(price, date)
+                return
+
+            # softer threshold
+            threshold = self.entry_threshold * 0.8
+
+            if abs(signal) < threshold:
                 self.stats["entries_skipped_threshold"] += 1
                 self.update_equity(price, date)
                 return
 
-            # Risk control
-            if self.current_total_risk() < self.max_total_risk:
+            # --- LONG: oversold ---
+            if price < lower and signal > 0:
 
-                # Create signal aligned with direction
-                mr_signal = direction * max(abs(signal), 0.5)  # ensure non-zero strength
-
-                self.open_trade(price, mr_signal, confidence, date)
-
-                self.stats["entries_total"] += 1
-                if direction == 1:
+                if self.current_total_risk() < self.max_total_risk:
+                    self.open_trade(price, atr, signal, confidence, date)
+                    self.stats["entries_total"] += 1
                     self.stats["entries_long"] += 1
-                else:
+
+            # --- SHORT: overbought ---
+            elif price > upper and signal < 0:
+
+                if self.current_total_risk() < self.max_total_risk:
+                    self.open_trade(price, atr, signal, confidence, date)
+                    self.stats["entries_total"] += 1
                     self.stats["entries_short"] += 1
 
+            else:
+                self.stats["entries_skipped_threshold"] += 1
+        '''
         # -------------------------------
         # UPDATE EQUITY
         # -------------------------------

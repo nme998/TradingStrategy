@@ -2,7 +2,6 @@ import os
 import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
-from edgar import *
 import datetime
 import pandas as pd
 from xgboost import XGBRegressor
@@ -87,12 +86,14 @@ def get_feature_data(ticker = "AAPL"):
 
     def Calc_returns(df): 
         df['log_return'] = np.log(df['Close'] / df['Close'].shift(1))
-        #df = df.dropna()
+        df = df.dropna()
         print(df.shape)
         return df['log_return'].values.reshape(-1, 1)
 
     def HMM_train(data):
         returns = Calc_returns(data) 
+        data = data.iloc[-len(returns):]  # align data to match returns length
+        data = data.copy()                # avoid pandas SettingWithCopyWarning
         returns = returns[1:]
         data = data.iloc[1:]
 
@@ -155,11 +156,7 @@ def get_feature_data(ticker = "AAPL"):
 
     stock_data["close_diff_1"] = stock_data.Close.diff(periods=1)
     stock_data = date_features(stock_data)
-
-    plt.rc("figure", figsize=(10,5))
-    plot_pacf(stock_data['Close'], method='ywm')
-    plt.show()
-
+    
     stock_data["return"] = np.log(stock_data["Close"] / stock_data["Close"].shift(1))
     stock_data["volatility_20"] = stock_data["return"].rolling(20).std()
     stock_data['SMA'] = SMA(stock_data, 13)
@@ -170,8 +167,8 @@ def get_feature_data(ticker = "AAPL"):
     stock_data['Upper_Band'], stock_data['Lower_Band'] = Bollinger_Bands(stock_data, 10)
     stock_data["H_L_diff"] = stock_data["High"] - stock_data["Low"]
     stock_data.drop("Adj Close", axis=1, inplace=True)
-    stock_data.drop("High", axis=1, inplace=True)
-    stock_data.drop("Low", axis=1, inplace=True)
+    #stock_data.drop("High", axis=1, inplace=True)
+    #stock_data.drop("Low", axis=1, inplace=True)
     stock_data["Bands_diff"] = stock_data["Upper_Band"] - stock_data["Lower_Band"]
     stock_data.drop("Upper_Band", axis=1, inplace=True)
     stock_data.drop("Lower_Band", axis=1, inplace=True)

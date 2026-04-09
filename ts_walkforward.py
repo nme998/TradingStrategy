@@ -7,7 +7,7 @@ from ts_backtest import BacktestEngine
 
 
 def run_walkforward_backtest(
-    ticker="AAPL",
+    ticker="TSLA",
     train_start=0.5,   # start with 50% training
     step_size=0.1,     # move forward by 10%
     initial_capital=10000
@@ -60,6 +60,8 @@ def run_walkforward_backtest(
 
             features = row[:-3]   # exclude targets
             price = row["Close"]
+            high  = row["High"]
+            low   = row["Low"]
             date = test_df.index[idx]
 
             # 🔥 PREDICTION
@@ -70,6 +72,8 @@ def run_walkforward_backtest(
             # 🔥 BACKTEST STEP
             engine.step(
                 price=price,
+                high=high,
+                low=low,
                 prediction=prediction,
                 date=date
             )

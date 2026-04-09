@@ -49,4 +49,4 @@ if len(engine.equity_curve) > 0:
 
 engine.print_stats()
 
-print("\nBacktest complete!")
+print("\nBacktest complete!") 
