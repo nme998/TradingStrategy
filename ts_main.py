@@ -1,11 +1,33 @@
 from ts_walkforward import run_walkforward_backtest
 from ts_metrics import PerformanceMetrics
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
 ticker = "TSLA"
 
 engine, data, all_predictions = run_walkforward_backtest(ticker)
+
+def plot_equity_and_returns(engine):
+    equity = np.array(engine.equity_curve)
+    returns = np.diff(equity) / equity[:-1]
+
+    plt.figure(figsize=(10, 5))
+
+    # Equity curve
+    plt.plot(engine.dates, equity, label="Equity")
+
+    # Returns (aligned to dates[1:])
+    plt.plot(engine.dates[1:], returns * equity.max(), label="Returns (scaled)", color="orange")
+
+    plt.title("Equity Curve + Returns")
+    plt.xlabel("Time")
+    plt.ylabel("Value")
+
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
 
 # -------------------- PERFORMANCE METRICS --------------------
 
@@ -50,3 +72,5 @@ if len(engine.equity_curve) > 0:
 engine.print_stats()
 
 print("\nBacktest complete!") 
+
+plot_equity_and_returns(engine)

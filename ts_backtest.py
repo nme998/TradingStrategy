@@ -20,12 +20,12 @@ class Trade:
 
 class BacktestEngine:
 
-    def __init__(self, initial_capital=10000, risk_per_trade=0.01, hmm_model=None, down_state=None, up_state=None):
+    def __init__(self, initial_capital=10000, risk_per_trade=0.015, hmm_model=None, down_state=None, up_state=None):
 
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.risk_per_trade = risk_per_trade
-        self.max_total_risk = 0.03
+        self.max_total_risk = 0.1
 
         self.hmm_model = hmm_model
         self.down_state = down_state
@@ -83,18 +83,21 @@ class BacktestEngine:
 
         return signal / std
     
-    def get_bollinger(self):
-        if len(self.price_history) < 20:
-            return None
+    def is_compressed(self):
+        if len(self.price_history) < 30:
+            return False
 
-        window = self.price_history[-20:]
-        mean   = np.mean(window)
-        std    = np.std(window)
+        recent_range = max(self.price_history[-10:]) - min(self.price_history[-10:])
+        past_range = max(self.price_history[-30:]) - min(self.price_history[-30:])
 
-        upper = mean + 2 * std
-        lower = mean - 2 * std
+        return recent_range < 0.5 * past_range
+    
+    def get_range_high_low(self):
+        if len(self.price_history) < 15:
+            return None, None
 
-        return mean, upper, lower
+        window = self.price_history[-10:]
+        return max(window), min(window)
     
     def get_atr(self, high, low):
 
@@ -336,11 +339,6 @@ class BacktestEngine:
             return
 
         # -------------------------------
-        # GET Z-SCORE (for mean reversion)
-        # -------------------------------
-        #zscore = self.get_zscore(price)
-
-        # -------------------------------
         # MOMENTUM STRATEGY (HIGH VOL)
         # -------------------------------
         if regime == "high_vol":
@@ -382,32 +380,34 @@ class BacktestEngine:
         # -------------------------------
         # MEAN REVERSION STRATEGY (LOW VOL)
         # -------------------------------
-        '''
+        
         elif regime == "low_vol":
-            ma, upper, lower = self.get_bollinger()
 
-            if ma is None:
+            high_range, low_range = self.get_range_high_low()
+
+            if high_range is None:
                 self.update_equity(price, date)
                 return
 
-            # softer threshold
-            threshold = self.entry_threshold * 0.8
+            compressed = self.is_compressed()
 
-            if abs(signal) < threshold:
-                self.stats["entries_skipped_threshold"] += 1
+            # Only trade when market is compressed
+            if not compressed:
                 self.update_equity(price, date)
                 return
 
-            # --- LONG: oversold ---
-            if price < lower and signal > 0:
+            breakout_buffer = 0.2 * atr
+
+            # --- BREAKOUT LONG ---
+            if price > high_range + breakout_buffer and signal > 0:
 
                 if self.current_total_risk() < self.max_total_risk:
                     self.open_trade(price, atr, signal, confidence, date)
                     self.stats["entries_total"] += 1
                     self.stats["entries_long"] += 1
 
-            # --- SHORT: overbought ---
-            elif price > upper and signal < 0:
+            # --- BREAKOUT SHORT ---
+            elif price < low_range - breakout_buffer and signal < 0:
 
                 if self.current_total_risk() < self.max_total_risk:
                     self.open_trade(price, atr, signal, confidence, date)
@@ -415,8 +415,9 @@ class BacktestEngine:
                     self.stats["entries_short"] += 1
 
             else:
-                self.stats["entries_skipped_threshold"] += 1
-        '''
+                self.update_equity(price, date)
+                return    
+
         # -------------------------------
         # UPDATE EQUITY
         # -------------------------------
