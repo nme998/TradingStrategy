@@ -4,9 +4,15 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-ticker = "TSLA"
+tickers = ["TSLA", "AAPL", "MSFT", "AMZN"]
 
-engine, data, all_predictions = run_walkforward_backtest(ticker)
+engine, all_predictions = run_walkforward_backtest(tickers)
+
+trade_pnls = [
+    t.pnl
+    for ticker in engine.closed_trades
+    for t in engine.closed_trades[ticker]
+]
 
 def plot_equity_and_returns(engine):
     equity = np.array(engine.equity_curve)
@@ -37,7 +43,11 @@ equity_series = pd.Series(engine.equity_curve)
 metrics = PerformanceMetrics(equity_series)
 
 # Extract trade PnLs
-trade_pnls = [t.pnl for t in engine.closed_trades]
+trade_pnls = [
+    trade.pnl
+    for trades in engine.closed_trades.values()
+    for trade in trades
+]
 
 print("\n=== PERFORMANCE METRICS ===")
 print("Sharpe Ratio:", metrics.sharpe_ratio())

@@ -27,8 +27,9 @@ class XGBModel:
 
         data = train_df.values
 
-        X = data[:, :-self.n_forecast]
-        Y = data[:, -self.n_forecast:]
+        X = data[:, :-(self.n_forecast+1)]
+        Y = data[:, -(self.n_forecast+1):-1]
+        print(data.shape, X.shape, Y.shape)
 
         # ✅ Fit scalers ONLY on training data
         self.feature_scaler.fit(X)
@@ -46,18 +47,18 @@ class XGBModel:
     # -------------------------------
     def predict(self, feature_row):
 
-        if not self.is_trained:
-            raise Exception("Model must be trained before prediction")
+        # Convert to array
+        data = np.array(feature_row)
 
-        # Ensure correct shape
-        X = np.array(feature_row).reshape(1, -1)
+        # Split exactly like training
+        X = data[:-(self.n_forecast+1)].reshape(1, -1)
 
-        # Scale using TRAIN scalers
+        # Scale
         X_scaled = self.feature_scaler.transform(X)
 
         pred_scaled = self.model.predict(X_scaled)
 
-        # Convert back to real returns
+        # Inverse transform
         pred = self.target_scaler.inverse_transform(pred_scaled)
 
-        return pred[0]   # shape: (3,)
+        return pred[0]

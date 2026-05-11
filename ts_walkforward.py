@@ -1,89 +1,234 @@
+from matplotlib import ticker
 import numpy as np
 import pandas as pd
 
-from ts_features import get_feature_data
+from ts_features import apply_lstm, get_feature_data, add_cross_sectional_features
 from ts_model import XGBModel
 from ts_backtest import BacktestEngine
+from ts_features import fit_hmm, fit_lstm, apply_hmm, apply_lstm
 
 
 def run_walkforward_backtest(
-    ticker="TSLA",
-    train_start=0.5,   # start with 50% training
-    step_size=0.1,     # move forward by 10%
+    tickers,
+    train_start=0.5,
+    step_size=0.1,
     initial_capital=10000
 ):
 
-    # -------------------------------
-    # LOAD DATA
-    # -------------------------------
-    data, hmm_model, down_state, up_state = get_feature_data(ticker)
+    # =========================================================
+    # LOAD + STACK MULTI-STOCK DATA
+    # =========================================================
+    training_data = []
+    hmm_models = {}
+    lstm_models = {}
+    lstm_scalers = {}
+    down_states = {}
+    up_states = {}
+    test_folds = {}
+    lookback = 30
 
-    n = len(data)
-    print("Total dataset size:", n)
+    for ticker in tickers:
+        df = get_feature_data(ticker)
+        split = int(len(df) * 0.5)
+        train_df = df.iloc[:split]
+        test_df = df.iloc[split:]
+        test_df = pd.concat([train_df.iloc[-lookback:], test_df])
 
-    # Convert percentages to indices
-    train_end = int(n * train_start)
-    step = int(n * step_size)
+        hmm_models[ticker], down_states[ticker], up_states[ticker] = fit_hmm(train_df)
+        train_df = apply_hmm(train_df, hmm_models[ticker])
+        lstm_models[ticker], lstm_scalers[ticker] = fit_lstm(train_df)
+        train_df = apply_lstm(lstm_models[ticker], lstm_scalers[ticker], train_df, lookback=lookback)
 
-    engine = BacktestEngine(initial_capital=initial_capital, hmm_model=hmm_model, down_state=down_state, up_state=up_state)
+        train_df["Ticker"] = ticker
+
+        train_df["target_1"] = train_df["return"].shift(-1)
+        train_df["target_2"] = train_df["return"].shift(-2)
+        train_df["target_3"] = train_df["return"].shift(-3)
+
+        if len(training_data) == 0:
+            training_data = train_df.copy()
+        else:
+            training_data = pd.concat([training_data, train_df], axis=0)
+
+        # =========================================================
+        # WALKFORWARD FOLD PREPARATION
+        # =========================================================
+        test_len = len(test_df)
+        fold_size = test_len // 5
+
+        test_folds[ticker] = []
+
+        for i in range(5):
+            start = i * fold_size
+            end = (i + 1) * fold_size if i < 4 else test_len
+
+            # ✅ INCLUDE LOOKBACK FROM PREVIOUS DATA
+            lookback_start = max(0, start - lookback)
+
+            fold_df = test_df.iloc[lookback_start:end].copy()
+
+            test_folds[ticker].append(fold_df)
+
+    training_data = add_cross_sectional_features(training_data)
+    # ===== FORCE COLUMN ORDER (TRAIN) =====
+    target_cols = ["target_1", "target_2", "target_3"]
+
+    feature_cols = [c for c in training_data.columns if c not in target_cols + ["Ticker"]]
+
+    training_data = training_data[feature_cols + target_cols + ["Ticker"]]
+    # =====================================
+    print("Total rows:", len(training_data))
+    print("Total unique dates:", training_data.index.unique().shape[0])
+
+    n_dates = len(training_data.index.unique())
+    train_end = int(n_dates * 0.5)
+    step = int((n_dates * 0.5) / 5)
+
+    # =========================================================
+    # BACKTEST ENGINE
+    # =========================================================
+    engine = BacktestEngine(
+        initial_capital=initial_capital,
+        hmm_models=hmm_models,
+        down_states=down_states,
+        up_states=up_states
+    )
+
+    # =========================================================
+    # WALKFORWARD LOOP
+    # =========================================================
 
     all_predictions = []
-
     fold = 1
 
-    # -------------------------------
-    # WALK-FORWARD LOOP
-    # -------------------------------
-    while train_end + step <= n:
+    for fold_idx in range(5):
+        print(f"Fold {fold_idx+1} date range:",
+            test_df.index.min(),
+            "→",
+            test_df.index.max())
 
-        test_end = train_end + step
+        processed_chunks = []
 
-        train_df = data.iloc[:train_end]
-        test_df = data.iloc[train_end:test_end]
+        # =====================================================
+        # BUILD FULL TEST SET FOR THIS FOLD
+        # =====================================================
+        for ticker in tickers:
 
-        print(f"\n--- Fold {fold} ---")
-        print(f"Train: 0 → {train_end} ({len(train_df)})")
-        print(f"Test: {train_end} → {test_end} ({len(test_df)})")
+            fold_df = test_folds[ticker][fold_idx].copy()
 
-        # -------------------------------
+            fold_df = apply_hmm(fold_df, hmm_models[ticker])
+            fold_df = apply_lstm(lstm_models[ticker], lstm_scalers[ticker], fold_df, lookback=lookback)
+
+            # remove lookback leakage
+            fold_df = fold_df.iloc[lookback:]
+
+            fold_df["Ticker"] = ticker
+
+            for df_ in [fold_df]:
+                df_["target_1"] = df_["return"].shift(-1)
+                df_["target_2"] = df_["return"].shift(-2)
+                df_["target_3"] = df_["return"].shift(-3)
+
+            processed_chunks.append(fold_df)
+
+        test_df = pd.concat(processed_chunks)
+
+        # IMPORTANT: cross-sectional AFTER merge
+        test_df = add_cross_sectional_features(test_df)
+
+        # ===== FORCE COLUMN ORDER =====
+        target_cols = ["target_1", "target_2", "target_3"]
+
+        feature_cols = [c for c in test_df.columns if c not in target_cols + ["Ticker"]]
+
+        test_df = test_df[feature_cols + target_cols + ["Ticker"]]
+        # ==============================
+
+        # ================= DEBUG BLOCK =================
+        print("\n===== DEBUG CHECK =====")
+
+        # 1. Check last row date (sanity: should be recent)
+        print("\nLast row of dataset:")
+        print(test_df.tail(1))
+
+        # 2. Pick a middle row for alignment check
+        idx = len(test_df) // 2
+        row = test_df.iloc[idx]
+
+        print("\n--- ROW CHECK ---")
+        print("Index position:", idx)
+        print("Date:", row.name)
+
+        # 3. Feature vs target check
+        print("\nFeatures vs Targets:")
+        print("return (t):", row["return"])
+        print("target_1:", row["target_1"])
+        print("target_2:", row["target_2"])
+        print("target_3:", row["target_3"])
+
+        # 4. Verify targets actually match future returns
+        try:
+            print("\nActual future returns:")
+            print("t+1:", test_df["return"].iloc[idx + 1])
+            print("t+2:", test_df["return"].iloc[idx + 2])
+            print("t+3:", test_df["return"].iloc[idx + 3])
+        except:
+            print("Not enough rows for future check")
+
+        # 5. LSTM window check
+        print("\nLSTM window used (last 5 rows of lookback):")
+        print(test_df.iloc[max(0, idx-5):idx+1][["return"]])
+
+        # 6. Check correlation (leak detection)
+        corr = np.corrcoef(
+            test_df["return"],
+            test_df["target_1"]
+        )[0, 1]
+
+        print("\nCorrelation(return, target_1):", corr)
+
+        print("===== END DEBUG =====\n")
+        # =================================================
+
+        # align training slice properly (already built earlier)
+        train_df = training_data  # or your prebuilt training_data
+
+        print(f"\n--- Fold {fold_idx + 1} ---")
+        train_df = train_df.replace([np.inf, -np.inf], np.nan)
+        train_df = train_df.dropna(subset=["target_1", "target_2", "target_3"])
+        print(train_df.tail(1) )
+        # =====================================================
         # TRAIN MODEL
-        # -------------------------------
+        # =====================================================
         model = XGBModel(n_forecast=3)
         model.train(train_df)
 
-        # -------------------------------
-        # DAILY SIMULATION
-        # -------------------------------
-        for idx in range(len(test_df)):
+        # =====================================================
+        # PREDICTION LOOP (NOW SIMPLE)
+        # =====================================================
+        for _, row in test_df.iterrows():
 
-            row = test_df.iloc[idx]
+            prediction = model.predict(row)
 
-            features = row[:-3]   # exclude targets
-            price = row["Close"]
-            high  = row["High"]
-            low   = row["Low"]
-            date = test_df.index[idx]
+            all_predictions.append({
+                "Date": row.name,
+                "Ticker": row["Ticker"],
+                "prediction": prediction
+            })
 
-            # 🔥 PREDICTION
-            prediction = model.predict(features)
-
-            all_predictions.append(prediction)
-
-            # 🔥 BACKTEST STEP
             engine.step(
-                price=price,
-                high=high,
-                low=low,
+                ticker=row["Ticker"],
+                price=row["Close"],
+                high=row["High"],
+                low=row["Low"],
                 prediction=prediction,
-                date=date
+                date=row.name
             )
 
-        # -------------------------------
-        # MOVE WINDOW FORWARD
-        # -------------------------------
-        train_end += step
         fold += 1
 
     print("\nBacktest complete")
 
-    return engine, data, all_predictions
+    predictions_df = pd.DataFrame(all_predictions)
+
+    return engine, predictions_df

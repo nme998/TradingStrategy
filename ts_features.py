@@ -1,384 +1,276 @@
-import os
 import numpy as np
-import yfinance as yf
-import matplotlib.pyplot as plt
-import datetime
 import pandas as pd
-from xgboost import XGBRegressor
-import numpy as np
+import yfinance as yf
+import datetime
+
 from hmmlearn.hmm import GaussianHMM
-from sklearn.metrics import root_mean_squared_error
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 from sklearn.preprocessing import MinMaxScaler
-from statsmodels.graphics.tsaplots import plot_pacf
-from statsmodels.tsa.stattools import adfuller
 from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import LSTM, Dense
 
-MODEL_FILE = "xgb_model.json"
+LSTM_FEATURES = [
+    "return",
+    "volatility_20",
+    "return_lag1",
+    "return_lag2",
+    "return_lag3",
+    "return_lag5",
+    "return_lag10",
+    "SMA_10",
+    "SMA_20",
+    "EMA_10",
+    "EMA_20",
+    "MACD",
+    "RSI",
+    "BB_mid",
+    "BB_std",
+    "BB_upper",
+    "BB_lower",
+    "dayofweek",
+    "month",
+    "dayofyear",
+    "regime",
+    "prob_low",
+    "prob_high"
+]
 
-def get_feature_data(ticker = "AAPL"):
-    end_date = datetime.datetime.now() 
-    start_date = end_date - datetime.timedelta(days = 365 * 10)
-    stock_data = yf.download(ticker, start=start_date.date(), end=end_date.date(), auto_adjust=False)
-    stock_data.columns = stock_data.columns.get_level_values(0)
+# =========================================================
+# FEATURES
+# =========================================================
+def build_base_features(df):
 
-    n_lookback = 30
-    n_forecast = 3
+    df = df.copy()
+    df.index = pd.to_datetime(df.index)
 
-    print(stock_data.tail(5))
-    print(stock_data.shape)
+    # -----------------------
+    # RETURNS
+    # -----------------------
+    df["return"] = np.log(df["Close"] / df["Close"].shift(1))
+    df["volatility_20"] = df["return"].rolling(20).std()
 
-    def SMA(data, window_size):
-        return data['Close'].rolling(window=window_size).mean()
+    # -----------------------
+    # LAG RETURNS (XGB FEATURES)
+    # -----------------------
+    for lag in [1, 2, 3, 5, 10]:
+        df[f"return_lag{lag}"] = df["return"].shift(lag)
 
-    def EMA(data, window_size):
-        return data['Close'].ewm(span=window_size).mean()
+    # -----------------------
+    # TECHNICAL INDICATORS
+    # -----------------------
+    df["SMA_10"] = df["Close"].rolling(10).mean()
+    df["SMA_20"] = df["Close"].rolling(20).mean()
 
-    def MACD(data, short_window, long_window):
-        short_EMA = EMA(data, short_window)
-        long_EMA = EMA(data, long_window)
-        return short_EMA - long_EMA
+    df["EMA_10"] = df["Close"].ewm(span=10).mean()
+    df["EMA_20"] = df["Close"].ewm(span=20).mean()
 
-    def RSI(data, window_size):
-        delta = data['Close'].diff()
-        delta = delta[1:] 
-        up = delta.clip(lower=0)
-        down = -1*delta.clip(upper=0)
-        ema_up = up.ewm(com=window_size-1 , min_periods=window_size).mean()
-        ema_down = down.ewm(com=window_size-1 , min_periods=window_size).mean()
-        return ema_up/ema_down
+    df["MACD"] = df["EMA_10"] - df["EMA_20"]
 
-    def Bollinger_Bands(data, window_size):
-        middle_band = SMA(data, window_size)
-        std_dev = data['Close'].rolling(window=window_size).std()
-        upper_band = middle_band + (std_dev*2)
-        lower_band = middle_band - (std_dev*2)
-        return upper_band, lower_band
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    def check_stationarity(series):
+    avg_gain = gain.ewm(span=14).mean()
+    avg_loss = loss.ewm(span=14).mean()
 
-        result = adfuller(series.values)
+    rs = avg_gain / (avg_loss + 1e-8)
+    df["RSI"] = 100 - (100 / (1 + rs))
 
-        print('ADF Statistic: %f' % result[0])
-        print('p-value: %f' % result[1])
-        print('Critical Values:')
-        for key, value in result[4].items():
-            print('\t%s: %.3f' % (key, value))
+    df["BB_mid"] = df["Close"].rolling(20).mean()
+    df["BB_std"] = df["Close"].rolling(20).std()
+    df["BB_upper"] = df["BB_mid"] + 2 * df["BB_std"]
+    df["BB_lower"] = df["BB_mid"] - 2 * df["BB_std"]
 
-        if (result[1] <= 0.05) & (result[4]['5%'] > result[0]):
-            print("\u001b[32mStationary\u001b[0m")
-        else:
-            print("\x1b[31mNon-stationary\x1b[0m")
+    # -----------------------
+    # DATE FEATURES
+    # -----------------------
+    df["dayofweek"] = df.index.dayofweek
+    df["month"] = df.index.month
+    df["dayofyear"] = df.index.dayofyear
 
-    def date_features(df):
-        df.index = pd.to_datetime(df.index)
-        df = df.copy()
-        df['dayofweek'] = df.index.dayofweek
-        df['quarter'] = df.index.quarter
-        df['month'] = df.index.month
-        df['year'] = df.index.year
-        df['dayofyear'] = df.index.dayofyear
-        df['dayofmonth'] = df.index.day
-        df['weekofyear'] = df.index.isocalendar().week
-        return df
+    df = df.dropna()
 
-    def Calc_returns(df): 
-        df['log_return'] = np.log(df['Close'] / df['Close'].shift(1))
-        df = df.dropna()
-        print(df.shape)
-        return df['log_return'].values.reshape(-1, 1)
+    return df
 
-    def HMM_train(data):
-        returns = Calc_returns(data) 
-        data = data.iloc[-len(returns):]  # align data to match returns length
-        data = data.copy()                # avoid pandas SettingWithCopyWarning
-        returns = returns[1:]
-        data = data.iloc[1:]
 
-        #Training HMM
-        hmm_model = GaussianHMM(
-        n_components=2,        # 2 hidden states
+# =========================================================
+# HMM
+# =========================================================
+def fit_hmm(train_df):
+
+    returns = train_df["return"].values.reshape(-1, 1)
+
+    hmm = GaussianHMM(
+        n_components=2,
         covariance_type="full",
-        n_iter=1000,
+        n_iter=500,
         random_state=42
     )
-        hmm_model.fit(returns)
-
-        transition_matrix = hmm_model.transmat_
-        state_means = hmm_model.means_.flatten()
-        state_vars = np.array([np.diag(cov)[0] for cov in hmm_model.covars_])
-
-        print("Transition Matrix:")
-        print(transition_matrix)
-
-        print("\nState Means:")
-        print(state_means)
-
-        print("\nState Variances:")
-        print(state_vars)
-
-        hidden_states = hmm_model.predict(returns)
-        state_probs = hmm_model.predict_proba(returns)
-
-        sorted_states = np.argsort(state_means)
 
-        down_state = sorted_states[0]
-        up_state = sorted_states[1]
+    hmm.fit(returns)
 
-        print("\nState Mapping:")
-        print("Down state:", down_state)
-        print("Up state:", up_state)
+    hidden = hmm.predict(returns)
+    means = [returns[hidden == i].mean() for i in range(2)]
 
-        data['regime'] = hidden_states
-        data['prob_state_0'] = state_probs[:, 0]
-        data['prob_state_1'] = state_probs[:, 1]
+    down_state = int(np.argmin(means))
+    up_state = int(np.argmax(means))
 
-        print("\nValidation Statistics:")
-        for i in range(2):
-            state_returns = data[data['regime'] == i]['log_return']
-            print(f"State {i}:")
-            print("  Mean:", state_returns.mean())
-            print("  Std:", state_returns.std())
-            print("  Count:", len(state_returns))
+    return hmm, down_state, up_state
 
-        print("\nDiagonal (Persistence) Probabilities:")
-        print(np.diag(transition_matrix))
 
-        regime_probs = hmm_model.predict_proba(returns)
-        X_with_regime = np.hstack([data, regime_probs])
-        print(X_with_regime)
-        return data, hmm_model, down_state, up_state
+# =========================================================
+# LSTM (PREDICT CLOSE)
+# =========================================================
+def fit_lstm(train_df, lookback=30, forecast=3):
 
-    check_stationarity(stock_data['Close'])
-    check_stationarity(stock_data['Close'].diff(periods=1).dropna())
+    df = train_df.copy()
 
-    stock_data["close_diff_1"] = stock_data.Close.diff(periods=1)
-    stock_data = date_features(stock_data)
-    
-    stock_data["return"] = np.log(stock_data["Close"] / stock_data["Close"].shift(1))
-    stock_data["volatility_20"] = stock_data["return"].rolling(20).std()
-    stock_data['SMA'] = SMA(stock_data, 13)
-    stock_data['EMA'] = EMA(stock_data, 9) 
-    stock_data['MACD'] = MACD(stock_data, 24, 52)
-    stock_data['RSI'] = RSI(stock_data, 14)
+    missing = [c for c in LSTM_FEATURES if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing LSTM features: {missing}")
 
-    stock_data['Upper_Band'], stock_data['Lower_Band'] = Bollinger_Bands(stock_data, 10)
-    stock_data["H_L_diff"] = stock_data["High"] - stock_data["Low"]
-    stock_data.drop("Adj Close", axis=1, inplace=True)
-    #stock_data.drop("High", axis=1, inplace=True)
-    #stock_data.drop("Low", axis=1, inplace=True)
-    stock_data["Bands_diff"] = stock_data["Upper_Band"] - stock_data["Lower_Band"]
-    stock_data.drop("Upper_Band", axis=1, inplace=True)
-    stock_data.drop("Lower_Band", axis=1, inplace=True)
+    print("\n[TRAIN] LSTM features:")
+    print(LSTM_FEATURES)
 
-    stock_data, hmm_model, down_state, up_state = HMM_train(stock_data)
-    stock_data.drop("log_return", axis=1, inplace=True)
-    stock_data["return_lag1"] = stock_data["return"].shift(1)
-    stock_data["return_lag2"] = stock_data["return"].shift(2)
-    stock_data["return_lag3"] = stock_data["return"].shift(3)
-    stock_data["return_lag5"] = stock_data["return"].shift(5)
-    stock_data["return_lag10"] = stock_data["return"].shift(10)
+    scaler = MinMaxScaler()
+    X_all = scaler.fit_transform(df[LSTM_FEATURES].values)
 
-    lstm_training_df = stock_data.copy()
+    close = df["Close"].values
 
-    # LSTM target columns = future Close prices
-    lstm_training_df["target_close_1"] = lstm_training_df["Close"].shift(-1)
-    lstm_training_df["target_close_2"] = lstm_training_df["Close"].shift(-2)
-    lstm_training_df["target_close_3"] = lstm_training_df["Close"].shift(-3)
+    X, Y = [], []
 
-    # Drop rows with NaNs created by shifting
-    lstm_training_df = lstm_training_df.dropna()
+    for i in range(lookback, len(df) - forecast):
+        X.append(X_all[i - lookback:i])
+        Y.append(close[i:i + forecast])
 
-    last_row = stock_data.tail(1)
-    stock_data.drop(stock_data.tail(1).index, inplace=True)
-    stock_data.dropna(inplace=True)
+    X = np.array(X)
+    Y = np.array(Y)
 
-    feature_scaler = MinMaxScaler()
-    target_scaler = MinMaxScaler()
+    model = Sequential([
+        LSTM(32, return_sequences=True, input_shape=(X.shape[1], X.shape[2])),
+        LSTM(32),
+        Dense(16, activation="relu"),
+        Dense(forecast)
+    ])
 
-    #LSTM Feature Extraction
-    def lstm_train_test_split(df, n_lookback, n_forecast, test_size=0.2):
+    model.compile(optimizer="adam", loss="mse")
+    model.fit(X, Y, epochs=10, batch_size=32, verbose=0)
 
-        feature_scaler = MinMaxScaler()
-        target_scaler = MinMaxScaler()
+    return model, scaler
 
-        # convert dataframe to numpy
-        data = df.to_numpy(dtype=np.float32)
 
-        # ---- SCALE DATA ----
-        feature_scaler.fit(data[:, :-n_forecast])
-        target_scaler.fit(data[:, -n_forecast:])
+# =========================================================
+# APPLY HMM
+# =========================================================
+def apply_hmm(df, hmm):
 
-        scaled_features = feature_scaler.transform(data[:, :-n_forecast])
-        scaled_target = target_scaler.transform(data[:, -n_forecast:])
+    states = hmm.predict(df["return"].values.reshape(-1, 1))
+    probs = hmm.predict_proba(df["return"].values.reshape(-1, 1))
 
-        data_scaled = np.concatenate((scaled_features, scaled_target), axis=1)
+    df = df.copy()
+    df["regime"] = states
+    df["prob_low"] = probs[:, 0]
+    df["prob_high"] = probs[:, 1]
 
-        # ---- CREATE SEQUENCES ----
-        X, Y = [], []
+    return df
 
-        for i in range(n_lookback, len(data_scaled) - n_forecast + 1):
-            X.append(data_scaled[i-n_lookback:i, :-n_forecast])
-            Y.append(data_scaled[i, -n_forecast:])
 
-        X = np.stack(X).astype(np.float32)
-        Y = np.stack(Y).astype(np.float32)
+# =========================================================
+# APPLY LSTM
+# =========================================================
+def apply_lstm(model, scaler, df, lookback=30):
 
-        split = int(len(X) * (1 - test_size))
+    df = df.copy()
 
-        X_train = X[:split]
-        X_test = X[split:]
+    missing = [c for c in LSTM_FEATURES if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing LSTM features: {missing}")
 
-        Y_train = Y[:split]
-        Y_test = Y[split:]
+    print("\n[APPLY] LSTM features:")
+    print(LSTM_FEATURES)
 
-        return X_train, X_test, Y_train, Y_test
+    features = scaler.transform(df[LSTM_FEATURES].values)
 
-    def train_lstm_model(X_train, Y_train, n_forecast, epochs=30):
+    latent_model = Model(
+        inputs=model.inputs,
+        outputs=model.layers[-2].output
+    )
 
-        model = Sequential()
+    X = []
+    for i in range(lookback, len(df)):
+        X.append(features[i - lookback:i])
 
-        model.add(LSTM(32, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
-        model.add(LSTM(32))
-        model.add(Dense(16, activation="relu", name="latent_layer"))  # latent features
-        model.add(Dense(n_forecast, name="forecast_output"))
+    X = np.array(X)
 
-        model.compile(
-            optimizer="adam",
-            loss="mse"
-        )
+    latent = latent_model.predict(X, verbose=0)
+    preds = model.predict(X, verbose=0)
 
-        model.fit(
-            X_train.astype("float32"),
-            Y_train.astype("float32"),
-            epochs=epochs,
-            batch_size=32,
-            validation_split=0.1,
-            verbose=1
-        )
+    df.loc[df.index[lookback:], "lstm_feat"] = latent[:, 0]
+    df.loc[df.index[lookback:], "lstm_pred_1"] = preds[:, 0]
+    df.loc[df.index[lookback:], "lstm_pred_2"] = preds[:, 1]
+    df.loc[df.index[lookback:], "lstm_pred_3"] = preds[:, 2]
 
-        
+    return df
 
-        return model
 
-    def add_lstm_features(lstm_training_df, lstm_model, X_sequences, n_lookback, n_forecast):
+# =========================================================
+# CROSS SECTIONAL FEATURES
+# =========================================================
+def add_cross_sectional_features(df):
 
-        # Extract hidden features
-        feature_extractor = Model(
-            inputs=lstm_model.inputs,
-            outputs=lstm_model.get_layer("latent_layer").output
-        )
+    df = df.copy()
 
-        latent_features = feature_extractor.predict(X_sequences)
+    # Ensure index is datetime
+    df.index = pd.to_datetime(df.index)
 
-        # Extract LSTM predictions
-        lstm_predictions = lstm_model.predict(X_sequences)
+    # Sort BEFORE grouping (important)
+    df = df.sort_values(["Ticker", df.index.name])
 
-        # Create dataframes
-        latent_df = pd.DataFrame(
-            latent_features,
-            columns=[f"lstm_feat_{i}" for i in range(latent_features.shape[1])]
-        )
+    print("\n[CROSS-SECTIONAL] feature columns:")
+    print(df.drop(columns=["Close"]).columns.tolist())
 
-        pred_df = pd.DataFrame(
-            lstm_predictions,
-            columns=[f"lstm_pred_{i+1}" for i in range(n_forecast)]
-        )
+    # -----------------------
+    # GROUP BY DATE (INDEX LEVEL)
+    # -----------------------
+    grouped = df.groupby(df.index)
 
-        # Align indexes
-        start_index = n_lookback
-        end_index = n_lookback + len(latent_df)
+    # Z-score across tickers per day
+    rank_vals = grouped["return"].rank()
+    mean = grouped["return"].transform("mean")
+    std = grouped["return"].transform("std")
+    zscore_vals = (df["return"] - mean) / (std + 1e-8)
 
-        latent_df.index = lstm_training_df.index[start_index:end_index]
-        pred_df.index = lstm_training_df.index[start_index:end_index]
+    insert_loc = df.columns.get_loc("return") + 1
 
-        # Insert before targets
-        insert_loc = len(lstm_training_df.columns) - n_forecast
+    df.insert(insert_loc, "rank_return", rank_vals)
+    df.insert(insert_loc + 1, "zscore_return", zscore_vals)
 
-        for col in latent_df.columns:
-            lstm_training_df[col] = np.nan
 
-        for col in pred_df.columns:
-            lstm_training_df[col] = np.nan
+    # -----------------------
+    # FINAL SORT (date → ticker)
+    # -----------------------
+    df = df.sort_values([df.index.name, "Ticker"])
 
-        lstm_training_df.loc[latent_df.index, latent_df.columns] = latent_df
-        lstm_training_df.loc[pred_df.index, pred_df.columns] = pred_df
+    # -----------------------
+    # REMOVE TICKER (NOT FOR MODEL)
+    # -----------------------
+    #df = df.drop(columns=["Ticker"])
 
-        #Remove LSTM target columns to avoid data leakage
-        lstm_training_df.drop(
-            ["target_close_1", "target_close_2", "target_close_3"],
-            axis=1,
-            inplace=True,
-            errors='ignore'
-        )
+    return df
 
-        return lstm_training_df
 
-    def walk_forward_train(lstm_training_df, train_size=0.8):
+# =========================================================
+# PIPELINE
+# =========================================================
+def get_feature_data(ticker):
 
-        split = int(len(lstm_training_df) * train_size)
+    end = datetime.datetime.now()
+    start = end - datetime.timedelta(days=365 * 10)
 
-        train = lstm_training_df[:split]
-        test = lstm_training_df[split:]
+    df = yf.download(ticker, start=start, end=end)
+    print("LAST ROW OF YF PULL: ", df.tail(3))
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(1)
 
-        predictions = []
+    df = build_base_features(df)
 
-        history = train.copy()
-        max_runs = 10
-        step = max(1, len(test) // max_runs)
-
-        for i in range(0, len(test), step):
-
-            X_train, X_test, Y_train, Y_test = lstm_train_test_split(
-                history, n_lookback, n_forecast
-            )
-
-            lstm_model = train_lstm_model(X_train, Y_train, n_forecast, epochs=10)
-
-            pred = lstm_model.predict(X_test[-1].reshape(1, *X_test[-1].shape))
-
-            predictions.append(pred)
-
-            history = pd.concat([history, test.iloc[i:i+step]])
-
-        stock_data = add_lstm_features(lstm_training_df, lstm_model, np.concatenate((X_train, X_test)), n_lookback, n_forecast)
-
-        print(stock_data.filter(like="lstm_feat").describe())
-        hidden_model = Model(
-            inputs=lstm_model.inputs,
-            outputs=lstm_model.get_layer("latent_layer").output
-        )
-        #DELETE (ONLY FOR DEBUGGING PURPOSES)__________________________________________
-        hidden_feats = hidden_model.predict(X_train[:100])
-        lstm_outputs = lstm_model.predict(X_train[:100])
-
-        print("Hidden features shape:", hidden_feats.shape)
-        print("LSTM outputs shape:", lstm_outputs.shape)
-
-        print("\nHidden feature sample:")
-        print(hidden_feats[:5])
-
-        print("\nLSTM forecast sample:")
-        print(lstm_outputs[:5])
-
-        print("\nHidden feature std:", hidden_feats.std(axis=0)[:10])
-        print("Output std:", lstm_outputs.std(axis=0))
-        #________________________________________________________________________
-        return stock_data
-
-    #LSTM feature generation
-    stock_data = walk_forward_train(lstm_training_df)
-
-    #Target Features
-    stock_data["target"] = stock_data["return"].shift(-1)
-    stock_data["target2"] = stock_data["return"].shift(-2)
-    stock_data["target3"] = stock_data["return"].shift(-3)
-    stock_data = stock_data.dropna()
-    print(stock_data[-10:])
-
-    print("Final dataset shape:", stock_data.shape)
-    print("Final columns:", stock_data.columns[-5:])
-
-    return stock_data, hmm_model, down_state, up_state
+    return df

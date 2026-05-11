@@ -1,159 +1,384 @@
-import tkinter as tk
-import LSTMPrediction
-import matplotlib
-matplotlib.use("TkAgg")
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import os
+import numpy as np
+import yfinance as yf
+import matplotlib.pyplot as plt
+import datetime
 import pandas as pd
-import pandas_datareader.data as web
-import subprocess
-from tkinter import *
+from xgboost import XGBRegressor
+import numpy as np
+from hmmlearn.hmm import GaussianHMM
+from sklearn.metrics import root_mean_squared_error
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from sklearn.preprocessing import MinMaxScaler
+from statsmodels.graphics.tsaplots import plot_pacf
+from statsmodels.tsa.stattools import adfuller
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.layers import LSTM, Dense
 
-root = tk.Tk()
-root.title("Name of App")
-model_recommendation = tk.StringVar()
-label_stock_name = tk.StringVar()
-label_stock_name.set('STOCK')
-company_name = tk.StringVar()
-company_name.set("Stock")
+MODEL_FILE = "xgb_model.json"
 
-def get_company_name(ticker_symbol):
-    try:
-        company = web.DataReader(ticker_symbol, 'yahoo')
-        return company.loc[company.index[0], 'Name']
-    except:
-        return None
+def get_feature_data(ticker = "AAPL"):
+    end_date = datetime.datetime.now() 
+    start_date = end_date - datetime.timedelta(days = 365 * 10)
+    stock_data = yf.download(ticker, start=start_date.date(), end=end_date.date(), auto_adjust=False)
+    stock_data.columns = stock_data.columns.get_level_values(0)
 
-#Get input text from the search bar
-def get_stock_name():
-    stock_name = search_bar.get()
-    label_stock_name.set(stock_name)
-    company_name = get_company_name(label_stock_name)
-    stock_plot, model_recommendation = LSTMPrediction.predict_stock(stock_name)
-    print(model_recommendation)
-    plot_stock_trend(stock_plot)
+    n_lookback = 30
+    n_forecast = 3
 
+    print(stock_data.tail(5))
+    print(stock_data.shape)
 
-def open_chat():
-    subprocess.run(["python", "chat.py"])    
+    def SMA(data, window_size):
+        return data['Close'].rolling(window=window_size).mean()
 
-#Draw the graph on the canvas
-def plot_stock_trend(stock_plot):
-    canvas = FigureCanvasTkAgg(stock_plot, master=root)
-    canvas.draw()
-      
-    toolbar = NavigationToolbar2Tk(canvas, root)
-    toolbar.update()
+    def EMA(data, window_size):
+        return data['Close'].ewm(span=window_size).mean()
 
-    canvas.get_tk_widget().place(relx=0.35, rely=0.3, anchor='nw')
-    canvas.get_tk_widget().config(width=500, height=400)
-    #canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=1)  
+    def MACD(data, short_window, long_window):
+        short_EMA = EMA(data, short_window)
+        long_EMA = EMA(data, long_window)
+        return short_EMA - long_EMA
 
-def set_favourite():
-    stock_name = search_bar.get()
-    if stock_name in favourite_list.get(0,"end"):
-        remove_index = favourite_list.get(0,tk.END).index(stock_name)
-        favourite_list.delete(remove_index)
-        print(favourite_list)
-    else:
-        favourite_list.insert(tk.END, stock_name)
-        print(favourite_list)
+    def RSI(data, window_size):
+        delta = data['Close'].diff()
+        delta = delta[1:] 
+        up = delta.clip(lower=0)
+        down = -1*delta.clip(upper=0)
+        ema_up = up.ewm(com=window_size-1 , min_periods=window_size).mean()
+        ema_down = down.ewm(com=window_size-1 , min_periods=window_size).mean()
+        return ema_up/ema_down
+
+    def Bollinger_Bands(data, window_size):
+        middle_band = SMA(data, window_size)
+        std_dev = data['Close'].rolling(window=window_size).std()
+        upper_band = middle_band + (std_dev*2)
+        lower_band = middle_band - (std_dev*2)
+        return upper_band, lower_band
+
+    def check_stationarity(series):
+
+        result = adfuller(series.values)
+
+        print('ADF Statistic: %f' % result[0])
+        print('p-value: %f' % result[1])
+        print('Critical Values:')
+        for key, value in result[4].items():
+            print('\t%s: %.3f' % (key, value))
+
+        if (result[1] <= 0.05) & (result[4]['5%'] > result[0]):
+            print("\u001b[32mStationary\u001b[0m")
+        else:
+            print("\x1b[31mNon-stationary\x1b[0m")
+
+    def date_features(df):
+        df.index = pd.to_datetime(df.index)
+        df = df.copy()
+        df['dayofweek'] = df.index.dayofweek
+        df['quarter'] = df.index.quarter
+        df['month'] = df.index.month
+        df['year'] = df.index.year
+        df['dayofyear'] = df.index.dayofyear
+        df['dayofmonth'] = df.index.day
+        df['weekofyear'] = df.index.isocalendar().week
+        return df
+
+    def Calc_returns(df): 
+        df['log_return'] = np.log(df['Close'] / df['Close'].shift(1))
+        df = df.dropna()
+        print(df.shape)
+        return df['log_return'].values.reshape(-1, 1)
+
+    def HMM_train(data):
+        returns = Calc_returns(data) 
+        data = data.iloc[-len(returns):]  # align data to match returns length
+        data = data.copy()                # avoid pandas SettingWithCopyWarning
+        returns = returns[1:]
+        data = data.iloc[1:]
+
+        #Training HMM
+        hmm_model = GaussianHMM(
+        n_components=2,        # 2 hidden states
+        covariance_type="full",
+        n_iter=1000,
+        random_state=42
+    )
+        hmm_model.fit(returns)
+
+        transition_matrix = hmm_model.transmat_
+        state_means = hmm_model.means_.flatten()
+        state_vars = np.array([np.diag(cov)[0] for cov in hmm_model.covars_])
+
+        print("Transition Matrix:")
+        print(transition_matrix)
+
+        print("\nState Means:")
+        print(state_means)
+
+        print("\nState Variances:")
+        print(state_vars)
+
+        hidden_states = hmm_model.predict(returns)
+        state_probs = hmm_model.predict_proba(returns)
+
+        sorted_states = np.argsort(state_means)
+
+        down_state = sorted_states[0]
+        up_state = sorted_states[1]
+
+        print("\nState Mapping:")
+        print("Down state:", down_state)
+        print("Up state:", up_state)
+
+        data['regime'] = hidden_states
+        data['prob_state_0'] = state_probs[:, 0]
+        data['prob_state_1'] = state_probs[:, 1]
+
+        print("\nValidation Statistics:")
+        for i in range(2):
+            state_returns = data[data['regime'] == i]['log_return']
+            print(f"State {i}:")
+            print("  Mean:", state_returns.mean())
+            print("  Std:", state_returns.std())
+            print("  Count:", len(state_returns))
+
+        print("\nDiagonal (Persistence) Probabilities:")
+        print(np.diag(transition_matrix))
+
+        regime_probs = hmm_model.predict_proba(returns)
+        X_with_regime = np.hstack([data, regime_probs])
+        print(X_with_regime)
+        return data, hmm_model, down_state, up_state
+
+    check_stationarity(stock_data['Close'])
+    check_stationarity(stock_data['Close'].diff(periods=1).dropna())
+
+    stock_data["close_diff_1"] = stock_data.Close.diff(periods=1)
+    stock_data = date_features(stock_data)
     
-def get_top_stocks():
-    sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]["Symbol"]
-    sp500 = sp500.head(10)
-    return sp500    
+    stock_data["return"] = np.log(stock_data["Close"] / stock_data["Close"].shift(1))
+    stock_data["volatility_20"] = stock_data["return"].rolling(20).std()
+    stock_data['SMA'] = SMA(stock_data, 13)
+    stock_data['EMA'] = EMA(stock_data, 9) 
+    stock_data['MACD'] = MACD(stock_data, 24, 52)
+    stock_data['RSI'] = RSI(stock_data, 14)
 
-def get_active_stock():
-    top_stock = top_stock_list.get(ACTIVE)
-    stock_plot, model_recommendation = LSTMPrediction.predict_stock(top_stock)
-    print(model_recommendation)
-    plot_stock_trend(stock_plot)   
+    stock_data['Upper_Band'], stock_data['Lower_Band'] = Bollinger_Bands(stock_data, 10)
+    stock_data["H_L_diff"] = stock_data["High"] - stock_data["Low"]
+    stock_data.drop("Adj Close", axis=1, inplace=True)
+    #stock_data.drop("High", axis=1, inplace=True)
+    #stock_data.drop("Low", axis=1, inplace=True)
+    stock_data["Bands_diff"] = stock_data["Upper_Band"] - stock_data["Lower_Band"]
+    stock_data.drop("Upper_Band", axis=1, inplace=True)
+    stock_data.drop("Lower_Band", axis=1, inplace=True)
 
-# Get the screen width and height
-screen_width = root.winfo_screenwidth()
-screen_height = root.winfo_screenheight()
+    stock_data, hmm_model, down_state, up_state = HMM_train(stock_data)
+    stock_data.drop("log_return", axis=1, inplace=True)
+    stock_data["return_lag1"] = stock_data["return"].shift(1)
+    stock_data["return_lag2"] = stock_data["return"].shift(2)
+    stock_data["return_lag3"] = stock_data["return"].shift(3)
+    stock_data["return_lag5"] = stock_data["return"].shift(5)
+    stock_data["return_lag10"] = stock_data["return"].shift(10)
 
-# Set the window size to half of the screen size
-root.geometry(f"{int(screen_width/2)}x{int(screen_height/2)}")
+    lstm_training_df = stock_data.copy()
 
-# Change the background color to #BB6161 
-root.config(bg='#BB6161')
+    # LSTM target columns = future Close prices
+    lstm_training_df["target_close_1"] = lstm_training_df["Close"].shift(-1)
+    lstm_training_df["target_close_2"] = lstm_training_df["Close"].shift(-2)
+    lstm_training_df["target_close_3"] = lstm_training_df["Close"].shift(-3)
 
-# Create a new frame widget for the middle frame
-middle_frame = tk.Frame(root, bg='#EEE8E8')
-middle_frame.place(relx=0.5, rely=0.5, relwidth=0.9, relheight=0.9, anchor='center')
+    # Drop rows with NaNs created by shifting
+    lstm_training_df = lstm_training_df.dropna()
 
-# Create a new frame widget for the left frame
-left_frame = tk.Frame(middle_frame, bg='#D2CCCC')
-left_frame.place(relx=0, rely=0.5, relwidth=0.3, relheight=1, anchor='w')
+    last_row = stock_data.tail(1)
+    stock_data.drop(stock_data.tail(1).index, inplace=True)
+    stock_data.dropna(inplace=True)
 
-# Add label for "Name of App"
-app_name = tk.Label(left_frame, text="Name of App", font=("Helvetica", 16, "bold"), bg="#D2CCCC", fg="#000000")
-app_name.place(relx=0, rely=0, relwidth=1, relheight=0.15)
+    feature_scaler = MinMaxScaler()
+    target_scaler = MinMaxScaler()
 
-# Add label for "Top Stock"
-top_stock = tk.Label(left_frame, text="Top Stock", font=("Helvetica", 14), bg="#D2CCCC", fg="#706C6B")
-top_stock.place(relx=0, rely=0.25, relwidth=1, relheight=0.05)
+    #LSTM Feature Extraction
+    def lstm_train_test_split(df, n_lookback, n_forecast, test_size=0.2):
 
-# Add list of example stocks
-#stock_list = tk.Label(left_frame, text="Example Stock 1\nExample Stock 2", font=("Helvetica", 12), bg="#D2CCCC", fg="#F6F2F1")
-#stock_list.place(relx=0, rely=0.30, relwidth=1, relheight=0.2)
+        feature_scaler = MinMaxScaler()
+        target_scaler = MinMaxScaler()
 
-# Add label for "Favourites"
-favourites = tk.Label(left_frame, text="Favourites", font=("Helvetica", 14), bg="#D2CCCC", fg="#706C6B")
-favourites.place(relx=0, rely=0.60, relwidth=1, relheight=0.05)
+        # convert dataframe to numpy
+        data = df.to_numpy(dtype=np.float32)
 
-# Add list of example favourites
-#favourite_list = tk.Label(left_frame, text="Example Favourite 1\nExample Favourite 2", font=("Helvetica", 12), bg="#D2CCCC", fg="#F6F2F1")
-#favourite_list.place(relx=0, rely=0.65, relwidth=1, relheight=0.2)
+        # ---- SCALE DATA ----
+        feature_scaler.fit(data[:, :-n_forecast])
+        target_scaler.fit(data[:, -n_forecast:])
 
-# Add horizontal line
-line = tk.Frame(left_frame, bg="#706C6B", height=0.005)
-line.place(relx=0, rely=0.9, relwidth=1, relheight=0.03)
+        scaled_features = feature_scaler.transform(data[:, :-n_forecast])
+        scaled_target = target_scaler.transform(data[:, -n_forecast:])
 
-right_frame = tk.Frame(middle_frame, bg='#EEE8E8')
-right_frame.place(relx=0.3, rely=0.5, relwidth=1, relheight=1, anchor='w')
+        data_scaled = np.concatenate((scaled_features, scaled_target), axis=1)
 
+        # ---- CREATE SEQUENCES ----
+        X, Y = [], []
 
+        for i in range(n_lookback, len(data_scaled) - n_forecast + 1):
+            X.append(data_scaled[i-n_lookback:i, :-n_forecast])
+            Y.append(data_scaled[i, -n_forecast:])
 
-# create button on right frame
-home_button = tk.Button(right_frame, text="Home", font=("Helvetica", 16, "bold"), bg="#D2CCCC", fg="#000000")
-home_button.grid(row=0, column=0, padx=5, pady=5, sticky='nsew')
+        X = np.stack(X).astype(np.float32)
+        Y = np.stack(Y).astype(np.float32)
 
+        split = int(len(X) * (1 - test_size))
 
-search_bar = tk.Entry(right_frame, bg='#FFF5F4',width=50)
-search_bar.insert(0, "search")
-search_bar.grid(row=0, column=1, padx=5, pady=5, sticky='nsew')
+        X_train = X[:split]
+        X_test = X[split:]
 
-search_button = tk.Button(right_frame, text = "Search", font = ("Helvetica", 16, "bold"), bg = '#D2CCCC', fg = '#000000', command = get_stock_name)
-search_button.grid(row = 0, column = 5, padx = 0, pady = 5, sticky = 'nsew')
+        Y_train = Y[:split]
+        Y_test = Y[split:]
 
+        return X_train, X_test, Y_train, Y_test
 
+    def train_lstm_model(X_train, Y_train, n_forecast, epochs=30):
 
-# create text "STOCK" on left side of right frame
-stock_text = tk.Label(right_frame, textvariable=label_stock_name.get(), font=("bold"), fg='black', bg='#FFF5F4')
-stock_text.place(relx=0.1, rely=0.2, anchor='nw')
+        model = Sequential()
 
-# create placeholder for graph on right frame
-graph_placeholder = tk.Label(right_frame, text="Graph Pending", fg='black', bg='#FFF5F4')
-graph_placeholder.place(relx=0.3, rely=0.5, anchor='nw')
+        model.add(LSTM(32, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+        model.add(LSTM(32))
+        model.add(Dense(16, activation="relu", name="latent_layer"))  # latent features
+        model.add(Dense(n_forecast, name="forecast_output"))
 
-# create text "Model Recommendation" on right frame
-model_text = tk.Label(right_frame, text=('Model Recommendation: ', model_recommendation), fg='black', bg='#FFF5F4')
-model_text.place(relx=0.25, rely=0.9, anchor='nw')
+        model.compile(
+            optimizer="adam",
+            loss="mse"
+        )
 
-#creating scrollbar adn list box for favourites
-scrollbar = tk.Scrollbar(left_frame)
-scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        model.fit(
+            X_train.astype("float32"),
+            Y_train.astype("float32"),
+            epochs=epochs,
+            batch_size=32,
+            validation_split=0.1,
+            verbose=1
+        )
 
-favourites_int = tk.IntVar()
-favourite_list = tk.Listbox(left_frame, yscrollcommand= scrollbar.set)
-favourite_list.__contains__ = lambda str:str in favourite_list.get(0,"end")
-favourite_list.place(relx=0, rely=0.65, relwidth=1, relheight=0.2)
+        
 
-# create favourites button
-favourites_button = tk.Button(right_frame, text="+", font=("Helvetica", 16, "bold"), bg="#D2CCCC", fg="#000000", command = set_favourite)
-favourites_button.place(relx = 0.6, rely = 0.2, anchor = 'nw')
+        return model
 
+    def add_lstm_features(lstm_training_df, lstm_model, X_sequences, n_lookback, n_forecast):
 
-root.mainloop()
+        # Extract hidden features
+        feature_extractor = Model(
+            inputs=lstm_model.inputs,
+            outputs=lstm_model.get_layer("latent_layer").output
+        )
+
+        latent_features = feature_extractor.predict(X_sequences)
+
+        # Extract LSTM predictions
+        lstm_predictions = lstm_model.predict(X_sequences)
+
+        # Create dataframes
+        latent_df = pd.DataFrame(
+            latent_features,
+            columns=[f"lstm_feat_{i}" for i in range(latent_features.shape[1])]
+        )
+
+        pred_df = pd.DataFrame(
+            lstm_predictions,
+            columns=[f"lstm_pred_{i+1}" for i in range(n_forecast)]
+        )
+
+        # Align indexes
+        start_index = n_lookback
+        end_index = n_lookback + len(latent_df)
+
+        latent_df.index = lstm_training_df.index[start_index:end_index]
+        pred_df.index = lstm_training_df.index[start_index:end_index]
+
+        # Insert before targets
+        insert_loc = len(lstm_training_df.columns) - n_forecast
+
+        for col in latent_df.columns:
+            lstm_training_df[col] = np.nan
+
+        for col in pred_df.columns:
+            lstm_training_df[col] = np.nan
+
+        lstm_training_df.loc[latent_df.index, latent_df.columns] = latent_df
+        lstm_training_df.loc[pred_df.index, pred_df.columns] = pred_df
+
+        #Remove LSTM target columns to avoid data leakage
+        lstm_training_df.drop(
+            ["target_close_1", "target_close_2", "target_close_3"],
+            axis=1,
+            inplace=True,
+            errors='ignore'
+        )
+
+        return lstm_training_df
+
+    def walk_forward_train(lstm_training_df, train_size=0.8):
+
+        split = int(len(lstm_training_df) * train_size)
+
+        train = lstm_training_df[:split]
+        test = lstm_training_df[split:]
+
+        predictions = []
+
+        history = train.copy()
+        max_runs = 10
+        step = max(1, len(test) // max_runs)
+
+        for i in range(0, len(test), step):
+
+            X_train, X_test, Y_train, Y_test = lstm_train_test_split(
+                history, n_lookback, n_forecast
+            )
+
+            lstm_model = train_lstm_model(X_train, Y_train, n_forecast, epochs=10)
+
+            pred = lstm_model.predict(X_test[-1].reshape(1, *X_test[-1].shape))
+
+            predictions.append(pred)
+
+            history = pd.concat([history, test.iloc[i:i+step]])
+
+        stock_data = add_lstm_features(lstm_training_df, lstm_model, np.concatenate((X_train, X_test)), n_lookback, n_forecast)
+
+        print(stock_data.filter(like="lstm_feat").describe())
+        hidden_model = Model(
+            inputs=lstm_model.inputs,
+            outputs=lstm_model.get_layer("latent_layer").output
+        )
+        #DELETE (ONLY FOR DEBUGGING PURPOSES)__________________________________________
+        hidden_feats = hidden_model.predict(X_train[:100])
+        lstm_outputs = lstm_model.predict(X_train[:100])
+
+        print("Hidden features shape:", hidden_feats.shape)
+        print("LSTM outputs shape:", lstm_outputs.shape)
+
+        print("\nHidden feature sample:")
+        print(hidden_feats[:5])
+
+        print("\nLSTM forecast sample:")
+        print(lstm_outputs[:5])
+
+        print("\nHidden feature std:", hidden_feats.std(axis=0)[:10])
+        print("Output std:", lstm_outputs.std(axis=0))
+        #________________________________________________________________________
+        return stock_data
+
+    #LSTM feature generation
+    stock_data = walk_forward_train(lstm_training_df)
+
+    #Target Features
+    stock_data["target"] = stock_data["return"].shift(-1)
+    stock_data["target2"] = stock_data["return"].shift(-2)
+    stock_data["target3"] = stock_data["return"].shift(-3)
+    stock_data = stock_data.dropna()
+    print(stock_data[-10:])
+
+    print("Final dataset shape:", stock_data.shape)
+    print("Final columns:", stock_data.columns[-5:])
+
+    return stock_data, hmm_model, down_state, up_state
