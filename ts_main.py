@@ -84,3 +84,5 @@ engine.print_stats()
 print("\nBacktest complete!") 
 
 plot_equity_and_returns(engine)
+
+#TODO: Add function to select stocks for trading.

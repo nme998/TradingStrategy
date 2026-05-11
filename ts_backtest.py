@@ -491,3 +491,5 @@ class BacktestEngine:
         print("\n=== TRADE DEBUG STATS ===")
         for k, v in self.stats.items():
             print(f"{k}: {v}")
+
+#TODO: Add pair trading strategy
