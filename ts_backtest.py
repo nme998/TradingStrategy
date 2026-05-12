@@ -254,7 +254,7 @@ class BacktestEngine:
         trade.entry_slippage = slippage
 
         side = "BUY" if direction == 1 else "SELL"
-        print(f"{side} Signal: {ticker} |  Date: {date} | Price: {price:.2f} | Size: {size:.2f} | SL: {stop_loss:.2f} | TP: {take_profit:.2f} | Confidence: {confidence:.2f}")
+        #print(f"{side} Signal: {ticker} |  Date: {date} | Price: {price:.2f} | Size: {size:.2f} | SL: {stop_loss:.2f} | TP: {take_profit:.2f} | Confidence: {confidence:.2f}")
 
     def close_trade(self, ticker, trade, price, date, reason):
 
@@ -298,6 +298,7 @@ class BacktestEngine:
 
         self.closed_trades[ticker].append(trade)
 
+        '''
         print(
             f"[{ticker}] [{reason}] "
             f"EntryDate ({trade.entry_date}) "
@@ -306,7 +307,7 @@ class BacktestEngine:
             f"Exit {price:.2f} | "
             f"PnL {trade.pnl:.2f}"
         )
-
+        '''
     # -------------------------------
     # UPDATE TRADES
     # -------------------------------
