@@ -60,7 +60,12 @@ print("Expectancy:", metrics.expectancy(trade_pnls))
 
 print("\n=== DEBUG INFO ===")
 
-print("Total Trades:", len(engine.closed_trades))
+total_trades = sum(
+    len(trades)
+    for trades in engine.closed_trades.values()
+)
+
+print("Total Trades:", total_trades)
 
 if trade_pnls:
     wins = [p for p in trade_pnls if p > 0]
@@ -77,7 +82,7 @@ print("End Equity:", engine.equity_curve[-1] if engine.equity_curve else 0)
 print("Final Capital:", engine.capital)
 
 if len(engine.equity_curve) > 0:
-    print("Trades per step:", len(engine.closed_trades) / len(engine.equity_curve))
+    print("Trades per step:", total_trades / len(engine.equity_curve))
 
 engine.print_stats()
 

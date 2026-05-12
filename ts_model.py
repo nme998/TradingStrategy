@@ -29,7 +29,7 @@ class XGBModel:
 
         X = data[:, :-(self.n_forecast+1)]
         Y = data[:, -(self.n_forecast+1):-1]
-        print(data.shape, X.shape, Y.shape)
+        print(Y[-1])
 
         # ✅ Fit scalers ONLY on training data
         self.feature_scaler.fit(X)

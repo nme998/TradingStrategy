@@ -149,43 +149,7 @@ def run_walkforward_backtest(
 
         # 1. Check last row date (sanity: should be recent)
         print("\nLast row of dataset:")
-        print(test_df.tail(1))
-
-        # 2. Pick a middle row for alignment check
-        idx = len(test_df) // 2
-        row = test_df.iloc[idx]
-
-        print("\n--- ROW CHECK ---")
-        print("Index position:", idx)
-        print("Date:", row.name)
-
-        # 3. Feature vs target check
-        print("\nFeatures vs Targets:")
-        print("return (t):", row["return"])
-        print("target_1:", row["target_1"])
-        print("target_2:", row["target_2"])
-        print("target_3:", row["target_3"])
-
-        # 4. Verify targets actually match future returns
-        try:
-            print("\nActual future returns:")
-            print("t+1:", test_df["return"].iloc[idx + 1])
-            print("t+2:", test_df["return"].iloc[idx + 2])
-            print("t+3:", test_df["return"].iloc[idx + 3])
-        except:
-            print("Not enough rows for future check")
-
-        # 5. LSTM window check
-        print("\nLSTM window used (last 5 rows of lookback):")
-        print(test_df.iloc[max(0, idx-5):idx+1][["return"]])
-
-        # 6. Check correlation (leak detection)
-        corr = np.corrcoef(
-            test_df["return"],
-            test_df["target_1"]
-        )[0, 1]
-
-        print("\nCorrelation(return, target_1):", corr)
+        print(test_df.tail(20))
 
         print("===== END DEBUG =====\n")
         # =================================================
@@ -209,6 +173,8 @@ def run_walkforward_backtest(
         for _, row in test_df.iterrows():
 
             prediction = model.predict(row)
+            if row.name in test_df.index[-20:]:
+                print(f"Date: {row.name}, Ticker: {row['Ticker']}, Prediction: {prediction}")
 
             all_predictions.append({
                 "Date": row.name,

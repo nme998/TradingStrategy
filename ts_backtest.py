@@ -15,6 +15,10 @@ class Trade:
         self.exit_date = None
         self.pnl = 0
 
+        self.entry_slippage = 0
+        self.exit_slippage = 0
+        self.transaction_cost = 0
+
         self.holding_days = 0
 
 
@@ -47,6 +51,8 @@ class BacktestEngine:
         self.exit_threshold = 0.5
         self.min_hold_days = 1
         self.max_hold_days = 5
+        self.slippage_factor = 0.02
+        self.transaction_cost_pct = 0.001
 
         # --- DATA BUFFERS ---
         self.signal_history = {}
@@ -63,8 +69,7 @@ class BacktestEngine:
 
             "exits_stop_loss": 0,
             "exits_take_profit": 0,
-            "exits_signal": 0,
-            "exits_time": 0
+            "exits_signal": 0
         }
 
     # -------------------------------
@@ -132,10 +137,19 @@ class BacktestEngine:
             trs.append(tr)
 
         return np.mean(trs[-14:])
+    
+    def calc_Z_score(self, data):
+        mean = np.mean(data)
+        std = np.std(data)
+
+        if std == 0:
+            return 0
+        
+        return (data[-1] - mean) / std
 
     def compute_confidence(self, prediction):
         signs = np.sign(prediction)
-        agreement = abs(np.sum(signs)) / 3  # 0 → no agreement, 1 → full
+        agreement = abs(np.sum(signs)) / 3 
 
         magnitude = np.mean(np.abs(prediction))
 
@@ -193,7 +207,7 @@ class BacktestEngine:
 
         base_size = risk_amount / risk_per_share
 
-        confidence = min(confidence * 10, 1.0)  # scale it properly
+        confidence = min(confidence * 10, 1.0)  
 
         return base_size * confidence
 
@@ -216,33 +230,66 @@ class BacktestEngine:
 
         direction = 1 if signal > 0 else -1
 
+        slippage = atr * self.slippage_factor
+
         if direction == 1:
-            stop_loss = price - 1.5 * atr
-            take_profit = price + 2.5 * atr
+            fill_price = price + slippage
+            stop_loss = fill_price - 1.5 * atr
+            take_profit = fill_price + 2.5 * atr
         else:
-            stop_loss = price + 1.5 * atr
-            take_profit = price - 2.5 * atr
+            fill_price = price - slippage
+            stop_loss = fill_price + 1.5 * atr
+            take_profit = fill_price - 2.5 * atr
         
-        size = self.calculate_position_size(price, stop_loss, confidence)
+        size = self.calculate_position_size(fill_price, stop_loss, confidence)
 
         if size <= 0:
             return
 
-        trade = Trade(price, size, direction, stop_loss, take_profit, date)
+        trade = Trade(fill_price, size, direction, stop_loss, take_profit, date)
         if ticker not in self.open_trades:
             self.open_trades[ticker] = []
         self.open_trades[ticker].append(trade)
 
-    def close_trade(self, ticker, trade, price, date, reason):
-        trade.is_open = False
-        trade.exit_price = price
-        trade.exit_date = date
+        trade.entry_slippage = slippage
 
-        trade.pnl = (
-            (price - trade.entry_price)
+        side = "BUY" if direction == 1 else "SELL"
+        print(f"{side} Signal: {ticker} |  Date: {date} | Price: {price:.2f} | Size: {size:.2f} | SL: {stop_loss:.2f} | TP: {take_profit:.2f} | Confidence: {confidence:.2f}")
+
+    def close_trade(self, ticker, trade, price, date, reason):
+
+        atr = self.get_atr(ticker)
+
+        slippage = atr * self.slippage_factor
+
+        if trade.direction == 1:
+            exit_fill = price - slippage
+        else:
+            exit_fill = price + slippage
+
+        trade_value = (
+            abs(trade.entry_price * trade.size)
+            +
+            abs(exit_fill * trade.size)
+        )
+
+        transaction_cost = (
+            trade_value * self.transaction_cost_pct
+        )
+
+        trade.is_open = False
+        trade.exit_price = exit_fill
+        trade.exit_date = date
+        trade.exit_slippage = slippage
+        trade.transaction_cost = transaction_cost
+
+        gross_pnl = (
+            (exit_fill - trade.entry_price)
             * trade.size
             * trade.direction
         )
+
+        trade.pnl = gross_pnl - transaction_cost
 
         self.capital += trade.pnl
 
@@ -251,7 +298,14 @@ class BacktestEngine:
 
         self.closed_trades[ticker].append(trade)
 
-        print(f"[{ticker}] [{reason}] Entry {trade.entry_price:.2f} → Exit {price:.2f} | PnL {trade.pnl:.2f}")
+        print(
+            f"[{ticker}] [{reason}] "
+            f"EntryDate ({trade.entry_date}) "
+            f"Entry {trade.entry_price:.2f} → "
+            f"ExitDate ({trade.exit_date}) "
+            f"Exit {price:.2f} | "
+            f"PnL {trade.pnl:.2f}"
+        )
 
     # -------------------------------
     # UPDATE TRADES
