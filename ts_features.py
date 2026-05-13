@@ -152,7 +152,7 @@ def fit_lstm(train_df, lookback=30, forecast=3):
         Dense(forecast)
     ])
 
-    model.compile(optimizer="adam", loss="mse")
+    model.compile(optimizer="adam", loss="huber")
     model.fit(X, Y, epochs=10, batch_size=32, verbose=0)
 
     return model, scaler
@@ -202,12 +202,9 @@ def apply_lstm(model, scaler, df, lookback=30):
     X = np.array(X)
 
     latent = latent_model.predict(X, verbose=0)
-    preds = model.predict(X, verbose=0)
 
-    df.loc[df.index[lookback:], "lstm_feat"] = latent[:, 0]
-    df.loc[df.index[lookback:], "lstm_pred_1"] = preds[:, 0]
-    df.loc[df.index[lookback:], "lstm_pred_2"] = preds[:, 1]
-    df.loc[df.index[lookback:], "lstm_pred_3"] = preds[:, 2]
+    for i in range(latent.shape[1]):
+        df.loc[df.index[lookback:], f"lstm_feat_{i}"] = latent[:, i]
 
     return df
 

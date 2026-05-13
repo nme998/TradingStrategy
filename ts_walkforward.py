@@ -128,13 +128,13 @@ def run_walkforward_backtest(
             # =================================================
             # RETRAIN LSTM
             # =================================================
-            lstm_model, lstm_scaler = fit_lstm(fold_train)
+            #lstm_model, lstm_scaler = fit_lstm(fold_train)
 
-            fold_train = apply_lstm(lstm_model, lstm_scaler, fold_train, lookback=lookback)
+            #fold_train = apply_lstm(lstm_model, lstm_scaler, fold_train, lookback=lookback)
 
-            fold_test = apply_lstm(lstm_model, lstm_scaler, fold_test, lookback=lookback)
+            #fold_test = apply_lstm(lstm_model, lstm_scaler, fold_test, lookback=lookback)
 
-            fold_test = fold_test.iloc[lookback:]
+            #fold_test = fold_test.iloc[lookback:]
 
             for dataset in [fold_train, fold_test]:
                 dataset["Ticker"] = ticker
