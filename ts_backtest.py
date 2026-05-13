@@ -1,4 +1,5 @@
 import numpy as np
+from ts_reversal_detection import detect_reversal
 
 
 class Trade:
@@ -24,7 +25,9 @@ class Trade:
 
 class BacktestEngine:
 
-    def __init__(self, initial_capital=10000, risk_per_trade=0.015, hmm_models=None, down_states=None, up_states=None):
+    def __init__(self, initial_capital=10000, risk_per_trade=0.015, 
+                 hmm_models=None, down_states=None, up_states=None, 
+                 lstm_models=None, lstm_scalers=None):
 
         self.initial_capital = initial_capital
         self.capital = initial_capital
@@ -34,6 +37,9 @@ class BacktestEngine:
         self.hmm_models = hmm_models
         self.down_states = down_states
         self.up_states = up_states
+
+        self.lstm_models = lstm_models
+        self.lstm_scalers = lstm_scalers
 
         self.open_trades = {}
         self.closed_trades = {}
@@ -383,7 +389,7 @@ class BacktestEngine:
     # STEP FUNCTION
     # -------------------------------
 
-    def step(self, ticker, price, high, low, prediction, date):
+    def step(self, ticker, price, high, low, prediction, date, lookback_window=None):
         # -------------------------------
         # INIT STORAGE
         # -------------------------------
@@ -413,6 +419,9 @@ class BacktestEngine:
         signal = self.normalize_signal(ticker, raw_signal)
         confidence = self.compute_confidence(prediction)
         trend = self.trend_filter(ticker, price)
+        #reversal = detect_reversal(self.lstm_models[ticker], self.lstm_scalers[ticker], lookback_window)
+        #if reversal > 0.7:
+        #    print(f"Reversal Probability: {reversal:.2f}"f" at Date ({date}) "f"for Ticker ({ticker})")
 
         # -------------------------------
         # UPDATE TRADES (ONLY THIS TICKER)

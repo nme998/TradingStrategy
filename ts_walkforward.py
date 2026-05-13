@@ -4,12 +4,11 @@ from ts_features import (
     get_feature_data,
     add_cross_sectional_features,
     fit_hmm,
-    apply_hmm,
-    fit_lstm,
-    apply_lstm
+    apply_hmm
 )
 from ts_model import XGBModel
 from ts_backtest import BacktestEngine
+from ts_reversal_detection import train_lstm
 
 
 def run_walkforward_backtest(
@@ -53,6 +52,9 @@ def run_walkforward_backtest(
         fold_hmm_models = {}
         fold_down_states = {}
         fold_up_states = {}
+
+        fold_lstm_models = {}
+        fold_lstm_scalers = {}
 
         # =====================================================
         # PROCESS EACH TICKER SEPARATELY
@@ -125,16 +127,13 @@ def run_walkforward_backtest(
 
             fold_test = apply_hmm(fold_test, hmm_model)
 
-            # =================================================
+            # =====================================================
             # RETRAIN LSTM
-            # =================================================
-            #lstm_model, lstm_scaler = fit_lstm(fold_train)
+            # =====================================================
+            #lstm_model, lstm_scaler = train_lstm(fold_train)
 
-            #fold_train = apply_lstm(lstm_model, lstm_scaler, fold_train, lookback=lookback)
-
-            #fold_test = apply_lstm(lstm_model, lstm_scaler, fold_test, lookback=lookback)
-
-            #fold_test = fold_test.iloc[lookback:]
+            #fold_lstm_models[ticker] = lstm_model
+            #fold_lstm_scalers[ticker] = lstm_scaler
 
             for dataset in [fold_train, fold_test]:
                 dataset["Ticker"] = ticker
@@ -158,8 +157,6 @@ def run_walkforward_backtest(
 
         # =====================================================
         # CROSS-SECTIONAL FEATURES
-        # IMPORTANT:
-        # THIS REQUIRES MULTI-TICKER SAME-DATE DATA
         # =====================================================
         train_df = add_cross_sectional_features(
             train_df
@@ -236,11 +233,14 @@ def run_walkforward_backtest(
         model.train(train_df)
 
         # =====================================================
-        # UPDATE ENGINE HMM MODELS
+        # UPDATE ENGINE HMM AND LSTM MODELS
         # =====================================================
         engine.hmm_models = fold_hmm_models
         engine.down_states = fold_down_states
         engine.up_states = fold_up_states
+
+        engine.lstm_models = fold_lstm_models
+        engine.lstm_scalers = fold_lstm_scalers
 
         # =====================================================
         # PREDICTION LOOP
@@ -248,7 +248,7 @@ def run_walkforward_backtest(
         print("\nRunning predictions...")
         prediction_debug = []#==========================================================================================================
 
-        for _, row in test_df.iterrows():
+        for _, row in test_df.iloc[lookback:].iterrows():
             # ==========================================================================================================
             # PREDICTION DEBUG STORAGE
             
@@ -289,6 +289,15 @@ def run_walkforward_backtest(
                 fold_actual_3.append(row["target_3"])
              # ==========================================================================================================
 
+            # =====================================================
+            # LOOKBACK WINDOW FOR REVERSAL DETECTION
+            # =====================================================
+            lookback_df = test_df[
+                (test_df["Ticker"] == row["Ticker"]) &
+                (test_df.index >= row.name - pd.Timedelta(days=lookback)) &
+                (test_df.index < row.name)
+            ]
+
             all_predictions.append({
                 "Date": row.name,
                 "Ticker": row["Ticker"],
@@ -301,7 +310,8 @@ def run_walkforward_backtest(
                 high=row["High"],
                 low=row["Low"],
                 prediction=prediction,
-                date=row.name
+                date=row.name,
+                lookback_window=lookback_df
             )
 
         print(f"\nFold {fold_idx + 1} complete")

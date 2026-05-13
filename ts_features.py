@@ -5,34 +5,6 @@ import datetime
 
 from hmmlearn.hmm import GaussianHMM
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Model, Sequential
-from tensorflow.keras.layers import LSTM, Dense
-
-LSTM_FEATURES = [
-    "return",
-    "volatility_20",
-    "return_lag1",
-    "return_lag2",
-    "return_lag3",
-    "return_lag5",
-    "return_lag10",
-    "SMA_10",
-    "SMA_20",
-    "EMA_10",
-    "EMA_20",
-    "MACD",
-    "RSI",
-    "BB_mid",
-    "BB_std",
-    "BB_upper",
-    "BB_lower",
-    "dayofweek",
-    "month",
-    "dayofyear",
-    "regime",
-    "prob_low",
-    "prob_high"
-]
 
 # =========================================================
 # FEATURES
@@ -118,47 +90,6 @@ def fit_hmm(train_df):
 
 
 # =========================================================
-# LSTM (PREDICT CLOSE)
-# =========================================================
-def fit_lstm(train_df, lookback=30, forecast=3):
-
-    df = train_df.copy()
-
-    missing = [c for c in LSTM_FEATURES if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing LSTM features: {missing}")
-
-    print("\n[TRAIN] LSTM features:")
-    print(LSTM_FEATURES)
-
-    scaler = MinMaxScaler()
-    X_all = scaler.fit_transform(df[LSTM_FEATURES].values)
-
-    close = df["Close"].values
-
-    X, Y = [], []
-
-    for i in range(lookback, len(df) - forecast):
-        X.append(X_all[i - lookback:i])
-        Y.append(close[i:i + forecast])
-
-    X = np.array(X)
-    Y = np.array(Y)
-
-    model = Sequential([
-        LSTM(32, return_sequences=True, input_shape=(X.shape[1], X.shape[2])),
-        LSTM(32),
-        Dense(16, activation="relu"),
-        Dense(forecast)
-    ])
-
-    model.compile(optimizer="adam", loss="huber")
-    model.fit(X, Y, epochs=10, batch_size=32, verbose=0)
-
-    return model, scaler
-
-
-# =========================================================
 # APPLY HMM
 # =========================================================
 def apply_hmm(df, hmm):
@@ -170,41 +101,6 @@ def apply_hmm(df, hmm):
     df["regime"] = states
     df["prob_low"] = probs[:, 0]
     df["prob_high"] = probs[:, 1]
-
-    return df
-
-
-# =========================================================
-# APPLY LSTM
-# =========================================================
-def apply_lstm(model, scaler, df, lookback=30):
-
-    df = df.copy()
-
-    missing = [c for c in LSTM_FEATURES if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing LSTM features: {missing}")
-
-    print("\n[APPLY] LSTM features:")
-    print(LSTM_FEATURES)
-
-    features = scaler.transform(df[LSTM_FEATURES].values)
-
-    latent_model = Model(
-        inputs=model.inputs,
-        outputs=model.layers[-2].output
-    )
-
-    X = []
-    for i in range(lookback, len(df)):
-        X.append(features[i - lookback:i])
-
-    X = np.array(X)
-
-    latent = latent_model.predict(X, verbose=0)
-
-    for i in range(latent.shape[1]):
-        df.loc[df.index[lookback:], f"lstm_feat_{i}"] = latent[:, i]
 
     return df
 
