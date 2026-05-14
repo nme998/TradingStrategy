@@ -57,7 +57,6 @@ print("Profit Factor:", metrics.profit_factor(trade_pnls))
 print("Expectancy:", metrics.expectancy(trade_pnls))
 
 # -------------------- DEBUG SECTION --------------------
-
 print("\n=== DEBUG INFO ===")
 
 total_trades = sum(

@@ -15,7 +15,7 @@ def run_walkforward_backtest(
     tickers,
     initial_capital=10000,
     n_folds=5,
-    lookback=30,
+    lookback=50,
     rolling_years=5,
     trading_days_per_year=252
 ):

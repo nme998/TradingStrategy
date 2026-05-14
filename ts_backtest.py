@@ -3,13 +3,15 @@ from ts_reversal_detection import detect_reversal
 
 
 class Trade:
-    def __init__(self, entry_price, size, direction, stop_loss, take_profit, entry_date):
+    def __init__(self, entry_price, size, direction, stop_loss, take_profit, entry_date, strategy, type):
         self.entry_price = entry_price
         self.size = size
         self.direction = direction
         self.stop_loss = stop_loss
         self.take_profit = take_profit
         self.entry_date = entry_date
+        self.strategy = strategy
+        self.type = type
 
         self.is_open = True
         self.exit_price = None
@@ -19,6 +21,7 @@ class Trade:
         self.entry_slippage = 0
         self.exit_slippage = 0
         self.transaction_cost = 0
+        self.pyramid = 0
 
         self.holding_days = 0
 
@@ -67,6 +70,10 @@ class BacktestEngine:
         # --- DEBUG ---
         self.stats = {
             "entries_total": 0,
+            "momentum_entries": 0,
+            "breakout_entries": 0,
+            "high_vol_entries": 0,
+            "low_vol_entries": 0,
             "entries_long": 0,
             "entries_short": 0,
             "entries_skipped_threshold": 0,
@@ -232,27 +239,35 @@ class BacktestEngine:
     # TRADE MANAGEMENT
     # -------------------------------
 
-    def open_trade(self, ticker, price, atr,  signal, confidence, date):
+    def open_trade(self, ticker, price, atr,  signal, confidence, date, strategy, type):
 
         direction = 1 if signal > 0 else -1
 
         slippage = atr * self.slippage_factor
 
-        if direction == 1:
+        if type == "long":
             fill_price = price + slippage
-            stop_loss = fill_price - 1.5 * atr
-            take_profit = fill_price + 2.5 * atr
-        else:
+            if strategy == "high_vol":
+                stop_loss = fill_price - 1.5 * atr
+                take_profit = fill_price + 2.5 * atr
+            elif strategy == "low_vol":
+                stop_loss = fill_price - 0.1 * atr
+                take_profit = fill_price + atr
+        elif type == "short":
             fill_price = price - slippage
-            stop_loss = fill_price + 1.5 * atr
-            take_profit = fill_price - 2.5 * atr
-        
+            if strategy == "high_vol":
+                stop_loss = fill_price + 1.5 * atr
+                take_profit = fill_price - 2.5 * atr
+            elif strategy == "low_vol":
+                stop_loss = fill_price + 0.1 * atr
+                take_profit = fill_price - atr
+
         size = self.calculate_position_size(fill_price, stop_loss, confidence)
 
         if size <= 0:
             return
 
-        trade = Trade(fill_price, size, direction, stop_loss, take_profit, date)
+        trade = Trade(fill_price, size, direction, stop_loss, take_profit, date, strategy, type)
         if ticker not in self.open_trades:
             self.open_trades[ticker] = []
         self.open_trades[ticker].append(trade)
@@ -318,7 +333,7 @@ class BacktestEngine:
     # UPDATE TRADES
     # -------------------------------
 
-    def update_trades(self, ticker, price, signal, date):
+    def update_trades(self, ticker, price, signal, date, confidence):
 
         if ticker not in self.open_trades:
             return
@@ -327,68 +342,126 @@ class BacktestEngine:
 
             trade.holding_days += 1
 
-            # Stop loss
-            if trade.direction == 1 and price <= trade.stop_loss:
-                self.stats["exits_stop_loss"] += 1
-                self.close_trade(ticker, trade, price, date, "SL")
-                self.open_trades[ticker].remove(trade)
-                continue
+            
 
-            if trade.direction == -1 and price >= trade.stop_loss:
-                self.stats["exits_stop_loss"] += 1
-                self.close_trade(ticker, trade, price, date, "SL")
-                self.open_trades[ticker].remove(trade)
-                continue
+            if trade.strategy == "high_vol":
+                atr = self.get_atr(ticker)
 
-            # Take profit
-            if trade.direction == 1 and price >= trade.take_profit:
-                self.stats["exits_take_profit"] += 1
-                self.close_trade(ticker, trade, price, date, "TP")
-                self.open_trades[ticker].remove(trade)
-                continue
+                if trade.type == "long":
+                    new_stop = price - 1.5 * atr
+                    trade.stop_loss = max(trade.stop_loss, new_stop)
 
-            if trade.direction == -1 and price <= trade.take_profit:
-                self.stats["exits_take_profit"] += 1
-                self.close_trade(ticker, trade, price, date, "TP")
-                self.open_trades[ticker].remove(trade)
-                continue
+                elif trade.type == "short":
+                    new_stop = price + 1.5 * atr
+                    trade.stop_loss = min(trade.stop_loss, new_stop)
 
+                unrealized_pnl = ((price - trade.entry_price) * trade.size * trade.direction)
+                if unrealized_pnl > 0:
+                    if abs(signal) > self.entry_threshold * 1.5 and trade.pyramid > 2:
+                        self.stats["entries_total"] += 1
+                        self.stats["momentum_entries"] += 1
+                        trade.pyramid += 1
+
+                        if signal > 0:
+                            self.open_trade(ticker, price, atr, signal, confidence, date, trade.strategy, "long")
+                            self.stats["entries_long"] += 1
+                        else:
+                            self.open_trade(ticker, price, atr, signal, confidence, date, trade.strategy, "short")
+                            self.stats["entries_short"] += 1
+
+                    if abs(signal) < self.exit_threshold:
+                        self.stats["exits_take_profit"] += 1
+                        self.close_trade(ticker, trade, price, date, "PROTECT")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+                
+                if trade.type == "long":
+                    # Stop loss
+                    if price <= trade.stop_loss:
+                        self.stats["exits_stop_loss"] += 1
+                        self.close_trade(ticker, trade, price, date, "SL")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+                    
+                    # Take profit
+                    if price >= trade.take_profit:
+                        self.stats["exits_take_profit"] += 1
+                        self.close_trade(ticker, trade, price, date, "TP")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+                    
+                elif trade.type == "short":
+                    if price >= trade.stop_loss:
+                        self.stats["exits_stop_loss"] += 1
+                        self.close_trade(ticker, trade, price, date, "SL")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+
+                    if price <= trade.take_profit:
+                        self.stats["exits_take_profit"] += 1
+                        self.close_trade(ticker, trade, price, date, "TP")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+
+            elif trade.strategy == "low_vol":
+                unrealized_pnl = ((price - trade.entry_price) * trade.size * trade.direction)
+                if unrealized_pnl > 0:
+                    if abs(signal) < self.exit_threshold * 0.5:
+                        self.stats["exits_take_profit"] += 1
+                        self.close_trade(ticker, trade, price, date, "PROTECT")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+                
+                if trade.type == "long":
+                    # Stop loss
+                    if price <= trade.stop_loss:
+                        self.stats["exits_stop_loss"] += 1
+                        self.close_trade(ticker, trade, price, date, "SL")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+                    '''
+                    # Take profit
+                    if price >= trade.take_profit:
+                        self.stats["exits_take_profit"] += 1
+                        self.close_trade(ticker, trade, price, date, "TP")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+                    '''
+                elif trade.type == "short":
+                    if price >= trade.stop_loss:
+                        self.stats["exits_stop_loss"] += 1
+                        self.close_trade(ticker, trade, price, date, "SL")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+                    
+                    '''
+                    if price <= trade.take_profit:
+                        self.stats["exits_take_profit"] += 1
+                        self.close_trade(ticker, trade, price, date, "TP")
+                        self.open_trades[ticker].remove(trade)
+                        continue
+                    '''
             if trade.holding_days >= self.min_hold_days:
 
                 trade_score = signal * trade.direction
-
+                
                 # --- HARD REVERSAL ---
                 if trade_score < -self.exit_threshold:
                     self.stats["exits_signal"] += 1
                     self.close_trade(ticker, trade, price, date, "REV")
                     self.open_trades[ticker].remove(trade)
                     continue
-
+                '''
                 # --- WEAK SIGNAL ---
                 if abs(signal) < self.exit_threshold * 0.5:
                     self.stats["exits_signal"] += 1
                     self.close_trade(ticker, trade, price, date, "WEAK")
                     self.open_trades[ticker].remove(trade)
                     continue
-
-                # --- PROFIT PROTECTION ---
-                unrealized_pnl = (
-                    (price - trade.entry_price)
-                    * trade.size
-                    * trade.direction
-                )
-
-                if unrealized_pnl > 0:
-                    if abs(signal) < self.exit_threshold:
-                        self.stats["exits_signal"] += 1
-                        self.close_trade(ticker, trade, price, date, "PROTECT")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-
+                '''
     # -------------------------------
     # STEP FUNCTION
     # -------------------------------
-
     def step(self, ticker, price, high, low, prediction, date, lookback_window=None):
         # -------------------------------
         # INIT STORAGE
@@ -419,29 +492,19 @@ class BacktestEngine:
         signal = self.normalize_signal(ticker, raw_signal)
         confidence = self.compute_confidence(prediction)
         trend = self.trend_filter(ticker, price)
+        regime = self.get_current_regime(ticker)
         #reversal = detect_reversal(self.lstm_models[ticker], self.lstm_scalers[ticker], lookback_window)
         #if reversal > 0.7:
         #    print(f"Reversal Probability: {reversal:.2f}"f" at Date ({date}) "f"for Ticker ({ticker})")
 
-        # -------------------------------
-        # UPDATE TRADES (ONLY THIS TICKER)
-        # -------------------------------
-        self.update_trades(ticker, price, signal, date)
+        self.update_trades(ticker, price, signal, date, confidence)
 
-        # -------------------------------
-        # UPDATE RETURNS (for HMM)
-        # -------------------------------
         if self.prev_price[ticker] is not None:
             ret = np.log(price / self.prev_price[ticker])
             self.returns_history[ticker].append(ret)
 
         self.prev_price[ticker] = price
         self.current_prices[ticker] = price
-
-        # -------------------------------
-        # REGIME
-        # -------------------------------
-        regime = self.get_current_regime(ticker)
 
         if regime is None:
             self.update_equity(date)
@@ -453,6 +516,7 @@ class BacktestEngine:
         if regime == "high_vol":
 
             threshold = self.entry_threshold * 0.8
+            self.stats["high_vol_entries"] += 1
 
             if abs(signal) < threshold:
                 self.stats["entries_skipped_threshold"] += 1
@@ -470,52 +534,32 @@ class BacktestEngine:
                 return
 
             if self.current_total_risk() < self.max_total_risk:
-
-                self.open_trade(ticker, price, atr, signal, confidence, date)
-
-                if abs(signal) > self.entry_threshold * 1.5:
-                    self.open_trade(ticker, price, atr, signal, confidence, date)
-
                 self.stats["entries_total"] += 1
+                self.stats["momentum_entries"] += 1
                 if signal > 0:
+                    self.open_trade(ticker, price, atr, signal, confidence, date, regime, "long")
                     self.stats["entries_long"] += 1
                 else:
+                    self.open_trade(ticker, price, atr, signal, confidence, date, regime, "short")
                     self.stats["entries_short"] += 1
-
+                
+                if abs(signal) > self.entry_threshold * 1.5:
+                    self.stats["entries_total"] += 1
+                    self.stats["momentum_entries"] += 1
+                    if signal > 0:
+                        self.open_trade(ticker, price, atr, signal, confidence, date, regime, "long")
+                        self.stats["entries_long"] += 1
+                    else:
+                        self.open_trade(ticker, price, atr, signal, confidence, date, regime, "short")
+                        self.stats["entries_short"] += 1
+                    
+                
         # ===============================
         # LOW VOL → BREAKOUT
         # ===============================
         elif regime == "low_vol":
-
-            high_range, low_range = self.get_range_high_low(ticker)
-
-            if high_range is None:
-                self.update_equity(date)
-                return
-
-            if not self.is_compressed(ticker):
-                self.update_equity(date)
-                return
-
-            breakout_buffer = 0.2 * atr
-
-            if price > high_range + breakout_buffer and signal > 0:
-
-                if self.current_total_risk() < self.max_total_risk:
-                    self.open_trade(ticker, price, atr, signal, confidence, date)
-                    self.stats["entries_total"] += 1
-                    self.stats["entries_long"] += 1
-
-            elif price < low_range - breakout_buffer and signal < 0:
-
-                if self.current_total_risk() < self.max_total_risk:
-                    self.open_trade(ticker, price, atr, signal, confidence, date)
-                    self.stats["entries_total"] += 1
-                    self.stats["entries_short"] += 1
-
-            else:
-                self.update_equity(date)
-                return
+            self.stats["low_vol_entries"] += 1
+                    
 
         # -------------------------------
         # EQUITY UPDATE

@@ -6,11 +6,24 @@ TODO List
 Prediction first finds out the current regime, then uses appropriate model
 seasonality trends
 heavier focus on trend reversals***
-run backtests inbetween the run on walkforward validation
++run backtests inbetween the run on walkforward validation
++trading strat only uses pred[0] but needs to use all 3 days to see if trades are worth it
+at each step check the pred for next 3 days to decide when to exit
+
++Multistock portfolio - stock rankings
+diversifying to reduce risk
 
 time series momentum(historical data)
 cross sectional momentum(same sector)
 
+------------------------------------------------------------
++Retrain after every backtest fold
++Check the predictions directional accuracy
+MetaLabelling(if worth it)
+
+------------------------------------------------------------
++Use LSTM to predict reversals
+SVM/second XGB as metalabelling to get confidence in signal
 
 Research papers
 LSTM/XGBoost - https://dl.acm.org/doi/epdf/10.1145/3785706.3785707
@@ -18,6 +31,9 @@ HMM - https://arxiv.org/pdf/2310.03775
 
 1️⃣ Walk-forward retraining (proper backtesting)
 2️⃣ Regime-specific XGBoost models (huge accuracy improvement)
+
+
+
 
 
 BACKTEST Indicators
@@ -33,3 +49,4 @@ VALUE at RISK
 VOLATILITY
 
 EXPOSURE
+
