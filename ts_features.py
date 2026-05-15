@@ -9,6 +9,7 @@ from sklearn.preprocessing import MinMaxScaler
 # =========================================================
 # FEATURES
 # =========================================================
+
 def build_base_features(df):
 
     df = df.copy()
@@ -29,13 +30,14 @@ def build_base_features(df):
     # -----------------------
     # TECHNICAL INDICATORS
     # -----------------------
-    df["SMA_10"] = df["Close"].rolling(10).mean()
     df["SMA_20"] = df["Close"].rolling(20).mean()
+    df["SMA_50"] = df["Close"].rolling(50).mean()
 
-    df["EMA_10"] = df["Close"].ewm(span=10).mean()
     df["EMA_20"] = df["Close"].ewm(span=20).mean()
+    df["EMA_50"] = df["Close"].ewm(span=50).mean()
 
-    df["MACD"] = df["EMA_10"] - df["EMA_20"]
+    df["MACD"] = df["Close"].ewm(span=12).mean() - df["Close"].ewm(span=26).mean()
+    df["Signal"] = df["MACD"].ewm(span=9).mean()
 
     delta = df["Close"].diff()
     gain = delta.clip(lower=0)

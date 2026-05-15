@@ -12,6 +12,7 @@ class Trade:
         self.entry_date = entry_date
         self.strategy = strategy
         self.type = type
+        self.score = 0
 
         self.is_open = True
         self.exit_price = None
@@ -54,6 +55,7 @@ class BacktestEngine:
         self.low_history = {}
         self.current_prices = {}
         self.prev_price = {}
+        self.signal_percentiles = {}
 
         # --- PARAMETERS ---
         self.entry_threshold = 1.0   
@@ -79,10 +81,12 @@ class BacktestEngine:
             "entries_skipped_threshold": 0,
             "entries_skipped_consistency": 0,
             "entries_skipped_trend": 0,
+            "entries_skipped_score": 0,
 
             "exits_stop_loss": 0,
             "exits_take_profit": 0,
-            "exits_signal": 0
+            "exits_signal": 0,
+            "exits_score": 0
         }
 
     # -------------------------------
@@ -159,14 +163,90 @@ class BacktestEngine:
             return 0
         
         return (data[-1] - mean) / std
+    
+    def compute_confidence(self, ticker, prediction, signal, regime, price, lookback_window):
 
-    def compute_confidence(self, prediction):
-        signs = np.sign(prediction)
-        agreement = abs(np.sum(signs)) / 3 
+        ema20 = float(lookback_window["EMA_20"].iloc[-1])
+        ema50 = float(lookback_window["EMA_50"].iloc[-1])
+        rsi = float(lookback_window["RSI"].iloc[-1])
+        macd = float(lookback_window["MACD"].iloc[-1])
+        vwap = float(np.mean(lookback_window["Close"].iloc[-20:]))
+        raw_pred_strength = np.mean(np.abs(prediction))
 
-        magnitude = np.mean(np.abs(prediction))
 
-        return agreement * magnitude
+        if ticker not in self.signal_percentiles:
+            self.signal_percentiles[ticker] = []
+        self.signal_percentiles[ticker].append(raw_pred_strength)
+        window = min(len(self.signal_percentiles[ticker]), 100)
+        history = self.signal_percentiles[ticker][-window:]
+        
+        percentile = (
+            sum(x <= raw_pred_strength for x in history)
+            / len(history)
+        )
+
+        model_score = percentile
+
+
+        regime_score = 1.0 if regime == "high_vol" else 0.4
+
+        trend_score = 0
+
+        if ema20 is not None and ema50 is not None:
+            if signal > 0 and ema20 > ema50:
+                trend_score += 1
+
+            elif signal < 0 and ema20 < ema50:
+                trend_score += 1
+
+
+        structure_score = 0
+
+        if signal > 0 and price > vwap:
+            structure_score += 1
+
+        elif signal < 0 and price < vwap:
+            structure_score += 1
+
+
+        pullback_score = 0
+
+        if ema20:
+
+            distance_to_ema = abs(price - ema20) / price
+
+            # close to EMA = better pullback
+            pullback_score = max(0, 1 - (distance_to_ema * 50))
+
+
+        rsi_score = 0
+
+        if signal > 0 and 40 <= rsi <= 60:
+            rsi_score = 1
+
+        elif signal < 0 and 40 <= rsi <= 60:
+            rsi_score = 1
+
+
+        macd_score = 0
+
+        if signal > 0 and macd > 0:
+            macd_score = 1
+
+        elif signal < 0 and macd < 0:
+            macd_score = 1
+
+        confidence = (
+            0.35 * model_score +
+            0.20 * regime_score +
+            0.15 * trend_score +
+            0.10 * structure_score +
+            0.10 * pullback_score +
+            0.05 * rsi_score +
+            0.05 * macd_score
+        )
+
+        return min(max(confidence, 0), 1)
 
     def is_consistent(self, prediction):
         return (
@@ -206,11 +286,107 @@ class BacktestEngine:
 
         return "high_vol" if current_state == self.up_states[ticker] else "low_vol"
 
-    # -------------------------------
-    # POSITION SIZING
-    # -------------------------------
+    def compute_entry_score(self, ticker, prediction, signal, regime, price, lookback_window):
 
-    def calculate_position_size(self, price, stop_loss_price, confidence):
+        score = 0
+        ema20 = float(lookback_window["EMA_20"].iloc[-1])
+        ema50 = float(lookback_window["EMA_50"].iloc[-1])
+        rsi = float(lookback_window["RSI"].iloc[-1])
+        macd = float(lookback_window["MACD"].iloc[-1])
+        vwap = float(np.mean(lookback_window["Close"].iloc[-20:]))
+
+        if signal > 0:
+            score += 3
+        elif signal < 0:
+            score += 3
+
+        if regime == "high_vol":
+            score += 2
+
+
+        if signal > 0 and ema20 > ema50:
+            score += 1
+        elif signal < 0 and ema20 < ema50:
+            score += 1
+
+
+        if signal > 0 and price > vwap:
+            score += 1
+        elif signal < 0 and price < vwap:
+            score += 1
+
+        distance = abs(price - ema20) / price
+
+        pullback_score = max(0, 1 - distance * 10)
+
+        score += 2 * pullback_score
+
+
+        #if 40 <= rsi <= 55:
+        #    score += 1
+
+
+        if signal > 0 and macd > 0:
+            score += 1
+        elif signal < 0 and macd < 0:
+            score += 1
+
+        return score
+    
+    def compute_exit_score(self, trade, ticker, price, signal, lookback_window):
+
+        score = 0
+        ema20 = float(lookback_window["EMA_20"].iloc[-1])
+        ema50 = float(lookback_window["EMA_50"].iloc[-1])
+        rsi = float(lookback_window["RSI"].iloc[-1])
+        macd = float(lookback_window["MACD"].iloc[-1])
+        vwap = float(np.mean(lookback_window["Close"].iloc[-20:]))
+
+        if abs(signal) < self.exit_threshold:
+            score += 2  # strong exit signal
+
+
+        if trade.type == "long" and ema20 < ema50:
+            score += 2
+
+        if trade.type == "short" and ema20 > ema50:
+            score += 2
+
+
+        if trade.type == "long" and price < vwap:
+            score += 1
+
+        if trade.type == "short" and price > vwap:
+            score += 1
+
+        unrealized_pnl = (price - trade.entry_price) * trade.size * trade.direction
+
+        if unrealized_pnl < 0:
+            score += 1  
+
+        return score
+    
+    def score_to_multiplier(self, score):
+
+        if score <= 4:
+            return 0.3   # small size
+        elif score <= 6:
+            return 0.7   # medium size
+        else:
+            return 1.5   # full size
+        
+    def get_volatility(self, ticker):
+
+        prices = self.price_history[ticker]
+
+        if len(prices) < 20:
+            return 1
+
+        returns = np.diff(np.log(prices[-20:]))
+
+        return np.std(returns)
+
+    def calculate_position_size(self, price, stop_loss_price, score, ticker):
 
         risk_amount = self.capital * self.risk_per_trade
         risk_per_share = abs(price - stop_loss_price)
@@ -220,9 +396,26 @@ class BacktestEngine:
 
         base_size = risk_amount / risk_per_share
 
-        confidence = min(confidence * 10, 1.0)  
+        # =========================
+        # SCORE MULTIPLIER
+        # =========================
+        score_multiplier = self.score_to_multiplier(score)
 
-        return base_size * confidence
+        # =========================
+        # VOLATILITY NORMALISATION
+        # =========================
+        vol = self.get_volatility(ticker)
+
+        target_vol = 0.01  # tuning parameter
+
+        vol_adjustment = target_vol / (vol + 1e-8)
+
+        # =========================
+        # FINAL SIZE
+        # =========================
+        size = base_size * score_multiplier * vol_adjustment
+
+        return size
 
     def current_total_risk(self):
         total = 0
@@ -239,7 +432,7 @@ class BacktestEngine:
     # TRADE MANAGEMENT
     # -------------------------------
 
-    def open_trade(self, ticker, price, atr,  signal, confidence, date, strategy, type):
+    def open_trade(self, ticker, price, atr,  signal, confidence, date, strategy, type, score):
 
         direction = 1 if signal > 0 else -1
 
@@ -262,7 +455,7 @@ class BacktestEngine:
                 stop_loss = fill_price + 0.1 * atr
                 take_profit = fill_price - atr
 
-        size = self.calculate_position_size(fill_price, stop_loss, confidence)
+        size = self.calculate_position_size(fill_price, stop_loss, score, ticker)
 
         if size <= 0:
             return
@@ -333,7 +526,7 @@ class BacktestEngine:
     # UPDATE TRADES
     # -------------------------------
 
-    def update_trades(self, ticker, price, signal, date, confidence):
+    def update_trades(self, ticker, price, signal, date, confidence, score, lookback_window):
 
         if ticker not in self.open_trades:
             return
@@ -341,8 +534,6 @@ class BacktestEngine:
         for trade in self.open_trades[ticker][:]:
 
             trade.holding_days += 1
-
-            
 
             if trade.strategy == "high_vol":
                 atr = self.get_atr(ticker)
@@ -363,10 +554,10 @@ class BacktestEngine:
                         trade.pyramid += 1
 
                         if signal > 0:
-                            self.open_trade(ticker, price, atr, signal, confidence, date, trade.strategy, "long")
+                            self.open_trade(ticker, price, atr, signal, confidence, date, trade.strategy, "long", score)
                             self.stats["entries_long"] += 1
                         else:
-                            self.open_trade(ticker, price, atr, signal, confidence, date, trade.strategy, "short")
+                            self.open_trade(ticker, price, atr, signal, confidence, date, trade.strategy, "short", score)
                             self.stats["entries_short"] += 1
 
                     if abs(signal) < self.exit_threshold:
@@ -375,6 +566,14 @@ class BacktestEngine:
                         self.open_trades[ticker].remove(trade)
                         continue
                 
+                exit_score = self.compute_exit_score(trade, ticker, price, signal, lookback_window)
+
+                if exit_score >= 3:
+                    self.stats["exits_score"] += 1
+                    self.close_trade(ticker, trade, price, date, "SCORE_EXIT")
+                    self.open_trades[ticker].remove(trade)
+                    continue
+
                 if trade.type == "long":
                     # Stop loss
                     if price <= trade.stop_loss:
@@ -490,14 +689,17 @@ class BacktestEngine:
         # -------------------------------
         raw_signal = self.compute_raw_signal(prediction)
         signal = self.normalize_signal(ticker, raw_signal)
-        confidence = self.compute_confidence(prediction)
-        trend = self.trend_filter(ticker, price)
         regime = self.get_current_regime(ticker)
+        trend = self.trend_filter(ticker, price)
+        confidence = self.compute_confidence(ticker, prediction, signal, regime, price, lookback_window)
+        score = self.compute_entry_score(ticker, prediction, signal, regime, price, lookback_window)
+        
+        
         #reversal = detect_reversal(self.lstm_models[ticker], self.lstm_scalers[ticker], lookback_window)
         #if reversal > 0.7:
         #    print(f"Reversal Probability: {reversal:.2f}"f" at Date ({date}) "f"for Ticker ({ticker})")
 
-        self.update_trades(ticker, price, signal, date, confidence)
+        self.update_trades(ticker, price, signal, date, confidence, score, lookback_window)
 
         if self.prev_price[ticker] is not None:
             ret = np.log(price / self.prev_price[ticker])
@@ -514,6 +716,11 @@ class BacktestEngine:
         # HIGH VOL → MOMENTUM
         # ===============================
         if regime == "high_vol":
+
+            if score < 6:
+                self.stats["entries_skipped_score"] += 1
+                self.update_equity(date)
+                return
 
             threshold = self.entry_threshold * 0.8
             self.stats["high_vol_entries"] += 1
@@ -537,20 +744,20 @@ class BacktestEngine:
                 self.stats["entries_total"] += 1
                 self.stats["momentum_entries"] += 1
                 if signal > 0:
-                    self.open_trade(ticker, price, atr, signal, confidence, date, regime, "long")
+                    self.open_trade(ticker, price, atr, signal, confidence, date, regime, "long", score)
                     self.stats["entries_long"] += 1
                 else:
-                    self.open_trade(ticker, price, atr, signal, confidence, date, regime, "short")
+                    self.open_trade(ticker, price, atr, signal, confidence, date, regime, "short", score)
                     self.stats["entries_short"] += 1
                 
                 if abs(signal) > self.entry_threshold * 1.5:
                     self.stats["entries_total"] += 1
                     self.stats["momentum_entries"] += 1
                     if signal > 0:
-                        self.open_trade(ticker, price, atr, signal, confidence, date, regime, "long")
+                        self.open_trade(ticker, price, atr, signal, confidence, date, regime, "long", score)
                         self.stats["entries_long"] += 1
                     else:
-                        self.open_trade(ticker, price, atr, signal, confidence, date, regime, "short")
+                        self.open_trade(ticker, price, atr, signal, confidence, date, regime, "short", score)
                         self.stats["entries_short"] += 1
                     
                 

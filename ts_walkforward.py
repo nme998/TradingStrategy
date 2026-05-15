@@ -297,7 +297,7 @@ def run_walkforward_backtest(
                 (test_df.index >= row.name - pd.Timedelta(days=lookback)) &
                 (test_df.index < row.name)
             ]
-
+            
             all_predictions.append({
                 "Date": row.name,
                 "Ticker": row["Ticker"],

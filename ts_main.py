@@ -20,11 +20,9 @@ def plot_equity_and_returns(engine):
 
     plt.figure(figsize=(10, 5))
 
-    # Equity curve
     plt.plot(engine.dates, equity, label="Equity")
 
-    # Returns (aligned to dates[1:])
-    plt.plot(engine.dates[1:], returns * equity.max(), label="Returns (scaled)", color="orange")
+    plt.plot(engine.dates[1:], returns * equity.max(), label="Returns", color="orange")
 
     plt.title("Equity Curve + Returns")
     plt.xlabel("Time")
