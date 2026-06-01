@@ -212,3 +212,6 @@ __marimo__/
 test.py/
 LSTM_GUI.py/
 LSTMPrediction.py/
+
+#csv files
+*.csv

@@ -65,4 +65,4 @@ class PerformanceMetrics:
         avg_loss = -np.mean(losses) if losses else 0
         return (avg_win * win_rate) - (avg_loss * loss_rate)
     
-#TODO: Add more metrics - Sortino ratio, Calmar ratio, alpha/beta, ValueatRisk, Volatility, Exposure.
+#TODO: Add more metrics - Sortino ratio, Calmar ratio, CAGR, alpha/beta, ValueatRisk, Volatility, Exposure.

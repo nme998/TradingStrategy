@@ -83,6 +83,22 @@ if len(engine.equity_curve) > 0:
 
 engine.print_stats()
 
+rows = []
+
+for ticker, trades in engine.closed_trades.items():
+
+    for trade in trades:
+
+        row = trade.__dict__.copy()
+
+        row["ticker"] = ticker
+
+        rows.append(row)
+
+df = pd.DataFrame(rows)
+
+df.to_csv("tradebook.csv", index=False)
+
 print("\nBacktest complete!") 
 
 plot_equity_and_returns(engine)
