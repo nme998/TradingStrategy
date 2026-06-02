@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-tickers = ["TSLA", "AAPL", "MSFT", "AMZN"]
+tickers = ["TSLA", "AAPL", "MSFT", "AMZN", "NVDA"]
 
 engine, all_predictions = run_walkforward_backtest(tickers)
 

@@ -195,84 +195,6 @@ class BacktestFunctions:
 
         return "high_vol" if current_state == self.up_states[ticker] else "low_vol"
 
-    def compute_entry_score(self, ticker, prediction, signal, regime, price, lookback_window):
-
-        score = 0
-        ema20 = float(lookback_window["EMA_20"].iloc[-1])
-        ema50 = float(lookback_window["EMA_50"].iloc[-1])
-        rsi = float(lookback_window["RSI"].iloc[-1])
-        macd = float(lookback_window["MACD"].iloc[-1])
-        vwap = float(np.mean(lookback_window["Close"].iloc[-20:]))
-
-        if signal > 0:
-            score += 3
-        elif signal < 0:
-            score += 3
-
-        if regime == "high_vol":
-            score += 2
-
-
-        if signal > 0 and ema20 > ema50:
-            score += 1
-        elif signal < 0 and ema20 < ema50:
-            score += 1
-
-
-        if signal > 0 and price > vwap:
-            score += 1
-        elif signal < 0 and price < vwap:
-            score += 1
-
-        distance = abs(price - ema20) / price
-
-        pullback_score = max(0, 1 - distance * 10)
-
-        score += 2 * pullback_score
-
-
-        #if 40 <= rsi <= 55:
-        #    score += 1
-
-
-        if signal > 0 and macd > 0:
-            score += 1
-        elif signal < 0 and macd < 0:
-            score += 1
-
-        return score
-
-    def compute_exit_score(self, trade, ticker, price, signal, lookback_window):
-
-        score = 0
-        ema20 = float(lookback_window["EMA_20"].iloc[-1])
-        ema50 = float(lookback_window["EMA_50"].iloc[-1])
-        vwap = float(np.mean(lookback_window["Close"].iloc[-20:]))
-
-        if abs(signal) < self.exit_threshold:
-            score += 2  # strong exit signal
-
-
-        if trade.type == "long" and ema20 < ema50:
-            score += 2
-
-        if trade.type == "short" and ema20 > ema50:
-            score += 2
-
-
-        if trade.type == "long" and price < vwap:
-            score += 1
-
-        if trade.type == "short" and price > vwap:
-            score += 1
-
-        unrealized_pnl = (price - trade.entry_price) * trade.size * trade.direction
-
-        if unrealized_pnl < 0:
-            score += 1  
-
-        return score
-
     def score_to_multiplier(self, score):
 
         if score <= 4:
@@ -292,37 +214,6 @@ class BacktestFunctions:
         returns = np.diff(np.log(prices[-20:]))
 
         return np.std(returns)
-
-    def calculate_position_size(self, price, stop_loss_price, score, ticker):
-
-        risk_amount = self.capital * self.risk_per_trade
-        risk_per_share = abs(price - stop_loss_price)
-
-        if risk_per_share == 0:
-            return 0
-
-        base_size = risk_amount / risk_per_share
-
-        # =========================
-        # SCORE MULTIPLIER
-        # =========================
-        score_multiplier = self.score_to_multiplier(score)
-
-        # =========================
-        # VOLATILITY NORMALISATION
-        # =========================
-        vol = self.get_volatility(ticker)
-
-        target_vol = 0.01  # tuning parameter
-
-        vol_adjustment = target_vol / (vol + 1e-8)
-
-        # =========================
-        # FINAL SIZE
-        # =========================
-        size = base_size * score_multiplier * vol_adjustment
-
-        return size
 
     def current_total_risk(self):
         total = 0

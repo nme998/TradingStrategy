@@ -80,7 +80,7 @@ class MainStrat:
 
         return score
     
-    def calculate_position_size(self, engine, price, stop_loss_price, score, ticker):
+    def calculate_position_size(self, engine, price, stop_loss_price, score, ticker, entropy):
 
         risk_amount = engine.capital * engine.risk_per_trade
         risk_per_share = abs(price - stop_loss_price)
@@ -109,6 +109,16 @@ class MainStrat:
         # =========================
         size = base_size * score_multiplier * vol_adjustment
 
+        if entropy is not None:
+            if entropy < 0.9:
+                size *= 1.5
+            elif entropy < 0.93:
+                size *= 1.7
+            elif entropy < 0.95:
+                size *= 0.5
+            else:
+                size *= 0.8
+
         return size
 
     def process_entries(self, engine, ticker, price, context):
@@ -124,7 +134,7 @@ class MainStrat:
             take_profit = fill_price - 2.5 * context.atr
 
         score = self.compute_entry_score(ticker, context.prediction, context.signal, context.regime, price, context.lookback_window)
-        size = self.calculate_position_size(engine, fill_price, stop_loss, score, ticker)
+        size = self.calculate_position_size(engine, fill_price, stop_loss, score, ticker, entropy = context.entropy)
 
         if context.regime != "high_vol":
             return
