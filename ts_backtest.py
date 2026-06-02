@@ -1,6 +1,7 @@
 import numpy as np
 from ts_reversal_detection import detect_reversal
 from ts_backtest_functions import  BacktestFunctions
+from ts_strategies.ts_main_strat import MainStrat
 
 
 class Trade:
@@ -31,15 +32,22 @@ class Trade:
 
         self.holding_days = 0
 
+        self.prediction = None
+        self.signal = None
+        self.confidence = None
+        self.regime = None
+        self.entropy = None
+        self.trend = None
+
 class TradeContext:
-    def __init__(self, prediction, raw_signal, signal, confidence, score, regime, trend, atr, lookback_window, date):
+    def __init__(self, prediction, raw_signal, signal, confidence, regime, entropy, trend, atr, lookback_window, date):
 
         self.prediction = prediction
         self.raw_signal = raw_signal
         self.signal = signal
         self.confidence = confidence
-        self.score = score
         self.regime = regime
+        self.entropy = entropy
         self.trend = trend
         self.atr = atr
         self.lookback_window = lookback_window
@@ -49,8 +57,9 @@ class BacktestEngine(BacktestFunctions):
 
     def __init__(self, initial_capital=10000, risk_per_trade=0.015, 
                  hmm_models=None, down_states=None, up_states=None, 
-                 lstm_models=None, lstm_scalers=None):
+                 lstm_models=None, lstm_scalers=None, strategy=None):
 
+        self.strategy = strategy or MainStrat()
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.risk_per_trade = risk_per_trade
@@ -108,40 +117,13 @@ class BacktestEngine(BacktestFunctions):
         }
 
     # -------------------------------
-    # SIGNAL PIPELINE
-    # -------------------------------
-
-    
-
-    # -------------------------------
     # TRADE MANAGEMENT
     # -------------------------------
 
-    def open_trade(self, ticker, price, type, context):
+    def open_trade(self, ticker, fill_price, size, take_profit, stop_loss, score, type, context):
 
         direction = 1 if context.signal > 0 else -1
-
         slippage = context.atr * self.slippage_factor
-
-        if type == "long":
-            fill_price = price + slippage
-            if context.regime == "high_vol":
-                stop_loss = fill_price - 1.5 * context.atr
-                take_profit = fill_price + 2.5 * context.atr
-            elif context.regime == "low_vol":
-                stop_loss = fill_price - 0.1 * context.atr
-                take_profit = fill_price + context.atr
-        elif type == "short":
-            fill_price = price - slippage
-            if context.regime == "high_vol":
-                stop_loss = fill_price + 1.5 * context.atr
-                take_profit = fill_price - 2.5 * context.atr
-            elif context.regime == "low_vol":
-                stop_loss = fill_price + 0.1 * context.atr
-                take_profit = fill_price - context.atr
-
-        size = self.calculate_position_size(fill_price, stop_loss, context.score, ticker)
-
         if size <= 0:
             return
 
@@ -151,6 +133,13 @@ class BacktestEngine(BacktestFunctions):
         self.open_trades[ticker].append(trade)
 
         trade.entry_slippage = slippage
+        trade.prediction = context.prediction
+        trade.signal = context.signal
+        trade.confidence = context.confidence
+        trade.regime = context.regime
+        trade.entropy = context.entropy
+        trade.trend = context.trend
+        trade.score = score
 
         side = "BUY" if direction == 1 else "SELL"
         #print(f"{side} Signal: {ticker} |  Date: {date} | Price: {price:.2f} | Size: {size:.2f} | SL: {stop_loss:.2f} | TP: {take_profit:.2f} | Confidence: {confidence:.2f}")
@@ -197,7 +186,7 @@ class BacktestEngine(BacktestFunctions):
 
         self.closed_trades[ticker].append(trade)
 
-        #'''
+        '''
         print(
             f"[{ticker}] [{reason}] "
             f"EntryDate ({trade.entry_date}) "
@@ -206,12 +195,12 @@ class BacktestEngine(BacktestFunctions):
             f"Exit {price:.2f} | "
             f"PnL {trade.pnl:.2f}"
         )
-        #'''
+        '''
     # -------------------------------
     # UPDATE TRADES
     # -------------------------------
 
-    def update_trades(self, ticker, price, type, context):
+    def update_trades(self, ticker, price, context):
 
         if ticker not in self.open_trades:
             return
@@ -231,27 +220,9 @@ class BacktestEngine(BacktestFunctions):
                     new_stop = price + 1.5 * atr
                     trade.stop_loss = min(trade.stop_loss, new_stop)
 
-                unrealized_pnl = ((price - trade.entry_price) * trade.size * trade.direction)
-                if unrealized_pnl > 0:
-                    if abs(context.signal) > self.entry_threshold * 1.5 and trade.pyramid > 2:
-                        self.stats["entries_total"] += 1
-                        self.stats["momentum_entries"] += 1
-                        trade.pyramid += 1
-
-                        if context.signal > 0:
-                            self.open_trade(ticker, price, "long", context)
-                            self.stats["entries_long"] += 1
-                        else:
-                            self.open_trade(ticker, price, "short", context)
-                            self.stats["entries_short"] += 1
-
-                    if abs(context.signal) < self.exit_threshold:
-                        self.stats["exits_take_profit"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "PROTECT")
-                        self.open_trades[ticker].remove(trade)
-                        continue
                 
-                exit_score = self.compute_exit_score(trade, ticker, price, context.signal, context.lookback_window)
+                
+                exit_score = self.strategy.compute_exit_score(self.exit_threshold, trade, ticker, price, context.signal, context.lookback_window)
 
                 if exit_score >= 3:
                     self.stats["exits_score"] += 1
@@ -375,19 +346,20 @@ class BacktestEngine(BacktestFunctions):
         raw_signal = self.compute_raw_signal(prediction)
         signal = self.normalize_signal(ticker, raw_signal)
         regime = self.get_current_regime(ticker)
+        entropy = self.calculate_permutation_entropy(lookback_window["return"], dx=3) 
         trend = self.trend_filter(ticker, price)
         confidence = self.compute_confidence(ticker, prediction, signal, regime, price, lookback_window)
-        score = self.compute_entry_score(ticker, prediction, signal, regime, price, lookback_window)
 
         #Trade Context to create tradebook and clean up args passed into open_trade and update_trades
-        context = TradeContext(prediction=prediction, raw_signal=raw_signal, signal=signal, confidence=confidence, score=score, regime=regime, trend=trend, atr=atr, lookback_window=lookback_window, date=date)
+        context = TradeContext(prediction=prediction, raw_signal=raw_signal, signal=signal, confidence=confidence, 
+                               regime=regime, entropy=entropy, trend=trend, atr=atr, lookback_window=lookback_window, date=date)
 
         
         #reversal = detect_reversal(self.lstm_models[ticker], self.lstm_scalers[ticker], lookback_window)
         #if reversal > 0.7:
         #    print(f"Reversal Probability: {reversal:.2f}"f" at Date ({date}) "f"for Ticker ({ticker})")
 
-        self.update_trades(ticker, price, type, context)
+        self.update_trades(ticker, price, context)
 
         if self.prev_price[ticker] is not None:
             ret = np.log(price / self.prev_price[ticker])
@@ -405,49 +377,13 @@ class BacktestEngine(BacktestFunctions):
         # ===============================
         if regime == "high_vol":
 
-            if score < 6:
-                self.stats["entries_skipped_score"] += 1
-                self.update_equity(date)
-                return
-
-            threshold = self.entry_threshold * 0.8
-            self.stats["high_vol_entries"] += 1
-
-            if abs(signal) < threshold:
-                self.stats["entries_skipped_threshold"] += 1
-                self.update_equity(date)
-                return
-
-            if not self.is_consistent(prediction):
-                self.stats["entries_skipped_consistency"] += 1
-                self.update_equity(date)
-                return
-
-            if trend != 0 and ((signal > 0 and trend != 1) or (signal < 0 and trend != -1)):
-                self.stats["entries_skipped_trend"] += 1
-                self.update_equity(date)
-                return
-
-            if self.current_total_risk() < self.max_total_risk:
-                self.stats["entries_total"] += 1
-                self.stats["momentum_entries"] += 1
-                if signal > 0:
-                    self.open_trade(ticker, price, "long", context)
-                    self.stats["entries_long"] += 1
-                else:
-                    self.open_trade(ticker, price, "short", context)
-                    self.stats["entries_short"] += 1
-                
-                if abs(signal) > self.entry_threshold * 1.5:
-                    self.stats["entries_total"] += 1
-                    self.stats["momentum_entries"] += 1
-                    if signal > 0:
-                        self.open_trade(ticker, price, "long", context)
-                        self.stats["entries_long"] += 1
-                    else:
-                        self.open_trade(ticker, price, "short", context)
-                        self.stats["entries_short"] += 1
-                    
+            self.strategy.process_entries(
+                engine=self,
+                ticker=ticker,
+                price=price,
+                context=context
+            )
+                                
                 
         # ===============================
         # LOW VOL → BREAKOUT

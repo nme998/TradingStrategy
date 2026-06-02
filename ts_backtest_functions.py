@@ -1,4 +1,5 @@
 import numpy as np
+from ordpy import permutation_entropy
 
 class BacktestFunctions:
     def compute_raw_signal(self, prediction):
@@ -333,3 +334,7 @@ class BacktestFunctions:
                 total += trade_risk
 
         return total / self.capital
+    
+    def calculate_permutation_entropy(self, returns, dx=3):
+        entropy =  permutation_entropy(returns, dx=dx, normalized=True)
+        return entropy
