@@ -248,70 +248,62 @@ def run_walkforward_backtest(
         print("\nRunning predictions...")
         prediction_debug = []#==========================================================================================================
 
-        for _, row in test_df.iloc[lookback:].iterrows():
-            # ==========================================================================================================
-            # PREDICTION DEBUG STORAGE
-            
-            fold_pred_1 = []
-            fold_pred_2 = []
-            fold_pred_3 = []
+        tradable_dates = sorted(
+            test_df.iloc[lookback:].index.unique()
+        )
 
-            fold_actual_1 = []
-            fold_actual_2 = []
-            fold_actual_3 = []
-            # ============================================================================================
+        for current_date in tradable_dates:
 
-            prediction = model.predict(row)
+            date_df = test_df.loc[test_df.index == current_date]
 
-            # ==========================================================================================================
-            # STORE PREDICTIONS + ACTUALS
-            prediction_debug.append({
+            day_rows = {}
+            day_predictions = {}
+            day_lookbacks = {}
 
-                "Ticker": row["Ticker"],
+            # ==========================================
+            # BUILD ALL TICKER DATA FOR THIS DATE
+            # ==========================================
 
-                "Date": row.name,
+            for _, row in date_df.iterrows():
 
-                "pred_1": prediction[0],
-                "pred_2": prediction[1],
-                "pred_3": prediction[2]
-            })
-           
-            if not pd.isna(row["target_1"]):
-                fold_pred_1.append(prediction[0])
-                fold_actual_1.append(row["target_1"])
+                ticker = row["Ticker"]
 
-            if not pd.isna(row["target_2"]):
-                fold_pred_2.append(prediction[1])
-                fold_actual_2.append(row["target_2"])
+                prediction = model.predict(row)
 
-            if not pd.isna(row["target_3"]):
-                fold_pred_3.append(prediction[2])
-                fold_actual_3.append(row["target_3"])
-             # ==========================================================================================================
+                day_rows[ticker] = row
+                day_predictions[ticker] = prediction
 
-            # =====================================================
-            # LOOKBACK WINDOW FOR REVERSAL DETECTION
-            # =====================================================
-            lookback_df = test_df[
-                (test_df["Ticker"] == row["Ticker"]) &
-                (test_df.index >= row.name - pd.Timedelta(days=lookback)) &
-                (test_df.index < row.name)
-            ]
-            
-            all_predictions.append({
-                "Date": row.name,
-                "Ticker": row["Ticker"],
-                "prediction": prediction
-            })
+                lookback_df = test_df[
+                    (test_df["Ticker"] == ticker)
+                    &
+                    (test_df.index < current_date)
+                ].tail(lookback)
+
+                day_lookbacks[ticker] = lookback_df
+
+                prediction_debug.append({
+                    "Ticker": ticker,
+                    "Date": current_date,
+                    "pred_1": prediction[0],
+                    "pred_2": prediction[1],
+                    "pred_3": prediction[2]
+                })
+
+                all_predictions.append({
+                    "Date": current_date,
+                    "Ticker": ticker,
+                    "prediction": prediction
+                })
+
+            # ==========================================
+            # SINGLE ENGINE CALL PER DATE
+            # ==========================================
 
             engine.step(
-                ticker=row["Ticker"],
-                price=row["Close"],
-                high=row["High"],
-                low=row["Low"],
-                prediction=prediction,
-                date=row.name,
-                lookback_window=lookback_df
+                date=current_date,
+                rows=day_rows,
+                predictions=day_predictions,
+                lookback_windows=day_lookbacks
             )
 
         print(f"\nFold {fold_idx + 1} complete")

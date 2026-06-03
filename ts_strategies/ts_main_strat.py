@@ -121,77 +121,80 @@ class MainStrat:
 
         return size
 
-    def process_entries(self, engine, ticker, price, context):
+    def process_entries(self, engine, rows, ticker_contexts):
 
-        slippage = context.atr * engine.slippage_factor
-        if context.signal > 0:
-            fill_price = price + slippage
-            stop_loss = fill_price - 1.5 * context.atr
-            take_profit = fill_price + 2.5 * context.atr
-        else:
-            fill_price = price - slippage
-            stop_loss = fill_price + 1.5 * context.atr
-            take_profit = fill_price - 2.5 * context.atr
+        for ticker, context in ticker_contexts.items():
 
-        score = self.compute_entry_score(ticker, context.prediction, context.signal, context.regime, price, context.lookback_window)
-        size = self.calculate_position_size(engine, fill_price, stop_loss, score, ticker, entropy = context.entropy)
+            price = rows[ticker]["Close"]
+            slippage = context.atr * engine.slippage_factor
+            if context.signal > 0:
+                fill_price = price + slippage
+                stop_loss = fill_price - 1.5 * context.atr
+                take_profit = fill_price + 2.5 * context.atr
+            else:
+                fill_price = price - slippage
+                stop_loss = fill_price + 1.5 * context.atr
+                take_profit = fill_price - 2.5 * context.atr
 
-        if context.regime != "high_vol":
-            return
+            score = self.compute_entry_score(ticker, context.prediction, context.signal, context.regime, price, context.lookback_window)
+            size = self.calculate_position_size(engine, fill_price, stop_loss, score, ticker, entropy = context.entropy)
 
-        if score < 6:
-            engine.stats["entries_skipped_score"] += 1
-            return
+            if context.regime != "high_vol":
+                continue
 
-        threshold = engine.entry_threshold * 0.8
+            if score < 6:
+                engine.stats["entries_skipped_score"] += 1
+                continue
 
-        engine.stats["high_vol_entries"] += 1
+            threshold = engine.entry_threshold * 0.8
 
-        if abs(context.signal) < threshold:
-            engine.stats["entries_skipped_threshold"] += 1
-            return
+            engine.stats["high_vol_entries"] += 1
 
-        if not engine.is_consistent(
-            context.prediction
-        ):
-            engine.stats["entries_skipped_consistency"] += 1
-            return
+            if abs(context.signal) < threshold:
+                engine.stats["entries_skipped_threshold"] += 1
+                continue
 
-        if (
-            context.trend != 0 and
-            (
-                (context.signal > 0 and context.trend != 1)
-                or
-                (context.signal < 0 and context.trend != -1)
-            )
-        ):
-            engine.stats["entries_skipped_trend"] += 1
-            return
+            if not engine.is_consistent(
+                context.prediction
+            ):
+                engine.stats["entries_skipped_consistency"] += 1
+                continue
 
-        if (engine.current_total_risk() >= engine.max_total_risk):
-            return
+            if (
+                context.trend != 0 and
+                (
+                    (context.signal > 0 and context.trend != 1)
+                    or
+                    (context.signal < 0 and context.trend != -1)
+                )
+            ):
+                engine.stats["entries_skipped_trend"] += 1
+                continue
 
-        engine.stats["entries_total"] += 1
-        engine.stats["momentum_entries"] += 1
+            if (engine.current_total_risk() >= engine.max_total_risk):
+                continue
 
-        if context.signal > 0:
-            engine.open_trade(ticker, fill_price, size, take_profit, stop_loss, score, "long", context)
-            engine.stats["entries_long"] += 1
-
-        else:
-            engine.open_trade(ticker, fill_price, size, take_profit, stop_loss, score, "short", context)
-            engine.stats["entries_short"] += 1
-
-        # strong signal add-on
-
-        if (abs(context.signal) > engine.entry_threshold * 1.5):
             engine.stats["entries_total"] += 1
             engine.stats["momentum_entries"] += 1
 
             if context.signal > 0:
-                engine.open_trade( ticker, fill_price, size, take_profit, stop_loss, score, "long", context)
+                engine.open_trade(ticker, fill_price, size, take_profit, stop_loss, score, "long", context)
                 engine.stats["entries_long"] += 1
 
             else:
-                engine.open_trade(ticker,  fill_price, size, take_profit, stop_loss, score, "short", context)
+                engine.open_trade(ticker, fill_price, size, take_profit, stop_loss, score, "short", context)
                 engine.stats["entries_short"] += 1
+
+            # strong signal add-on
+
+            if (abs(context.signal) > engine.entry_threshold * 1.5):
+                engine.stats["entries_total"] += 1
+                engine.stats["momentum_entries"] += 1
+
+                if context.signal > 0:
+                    engine.open_trade( ticker, fill_price, size, take_profit, stop_loss, score, "long", context)
+                    engine.stats["entries_long"] += 1
+
+                else:
+                    engine.open_trade(ticker,  fill_price, size, take_profit, stop_loss, score, "short", context)
+                    engine.stats["entries_short"] += 1

@@ -317,84 +317,127 @@ class BacktestEngine(BacktestFunctions):
     # -------------------------------
     # STEP FUNCTION
     # -------------------------------
-    def step(self, ticker, price, high, low, prediction, date, lookback_window=None):
-        # -------------------------------
-        # INIT STORAGE
-        # -------------------------------
-        if ticker not in self.prev_price:
-            self.prev_price[ticker] = None
+    def step(self, date, rows, predictions, lookback_windows):
 
-        if ticker not in self.returns_history:
-            self.returns_history[ticker] = []
+        ticker_contexts = {}
 
-        # -------------------------------
-        # ATR
-        # -------------------------------
-        if ticker not in self.price_history:
-            self.price_history[ticker] = []
-            self.high_history[ticker] = []
-            self.low_history[ticker] = []
+        # ===================================
+        # BUILD CONTEXT FOR EVERY TICKER
+        # ===================================
 
-        self.price_history[ticker].append(price)
-        self.high_history[ticker].append(high)
-        self.low_history[ticker].append(low)
-        atr = self.get_atr(ticker)
+        for ticker, row in rows.items():
 
-        # -------------------------------
-        # SIGNAL PIPELINE
-        # -------------------------------
-        raw_signal = self.compute_raw_signal(prediction)
-        signal = self.normalize_signal(ticker, raw_signal)
-        regime = self.get_current_regime(ticker)
-        entropy = self.calculate_permutation_entropy(lookback_window["return"], dx=3) 
-        trend = self.trend_filter(ticker, price)
-        confidence = self.compute_confidence(ticker, prediction, signal, regime, price, lookback_window)
+            price = row["Close"]
+            high = row["High"]
+            low = row["Low"]
+            prediction = predictions[ticker]
+            lookback_window = lookback_windows[ticker]
 
-        #Trade Context to create tradebook and clean up args passed into open_trade and update_trades
-        context = TradeContext(prediction=prediction, raw_signal=raw_signal, signal=signal, confidence=confidence, 
-                               regime=regime, entropy=entropy, trend=trend, atr=atr, lookback_window=lookback_window, date=date)
+            # -------------------------------
+            # INIT STORAGE
+            # -------------------------------
 
-        
-        #reversal = detect_reversal(self.lstm_models[ticker], self.lstm_scalers[ticker], lookback_window)
-        #if reversal > 0.7:
-        #    print(f"Reversal Probability: {reversal:.2f}"f" at Date ({date}) "f"for Ticker ({ticker})")
+            if ticker not in self.prev_price:
+                self.prev_price[ticker] = None
 
-        self.update_trades(ticker, price, context)
+            if ticker not in self.returns_history:
+                self.returns_history[ticker] = []
 
-        if self.prev_price[ticker] is not None:
-            ret = np.log(price / self.prev_price[ticker])
-            self.returns_history[ticker].append(ret)
+            if ticker not in self.price_history:
+                self.price_history[ticker] = []
+                self.high_history[ticker] = []
+                self.low_history[ticker] = []
 
-        self.prev_price[ticker] = price
-        self.current_prices[ticker] = price
+            # -------------------------------
+            # ATR
+            # -------------------------------
 
-        if regime is None:
-            self.update_equity(date)
-            return
+            self.price_history[ticker].append(price)
+            self.high_history[ticker].append(high)
+            self.low_history[ticker].append(low)
 
-        # ===============================
-        # HIGH VOL → MOMENTUM
-        # ===============================
-        if regime == "high_vol":
+            atr = self.get_atr(ticker)
 
-            self.strategy.process_entries(
-                engine=self,
-                ticker=ticker,
-                price=price,
-                context=context
+            # -------------------------------
+            # SIGNAL PIPELINE
+            # -------------------------------
+
+            raw_signal = self.compute_raw_signal(prediction)
+            signal = self.normalize_signal(ticker, raw_signal)
+            regime = self.get_current_regime(ticker)
+
+            entropy = self.calculate_permutation_entropy(
+                lookback_window["return"],
+                dx=3
             )
-                                
-                
-        # ===============================
-        # LOW VOL → BREAKOUT
-        # ===============================
-        elif regime == "low_vol":
-            self.stats["low_vol_entries"] += 1
-                    
 
-        # -------------------------------
-        # EQUITY UPDATE
-        # -------------------------------
+            trend = self.trend_filter(ticker, price)
+
+            confidence = self.compute_confidence(
+                ticker,
+                prediction,
+                signal,
+                regime,
+                price,
+                lookback_window
+            )
+
+            context = TradeContext(
+                prediction=prediction,
+                raw_signal=raw_signal,
+                signal=signal,
+                confidence=confidence,
+                regime=regime,
+                entropy=entropy,
+                trend=trend,
+                atr=atr,
+                lookback_window=lookback_window,
+                date=date
+            )
+
+            ticker_contexts[ticker] = context
+
+        # ===================================
+        # UPDATE OPEN TRADES
+        # ===================================
+
+        for ticker, row in rows.items():
+
+            self.update_trades(
+                ticker,
+                row["Close"],
+                ticker_contexts[ticker]
+            )
+
+        # ===================================
+        # UPDATE RETURNS
+        # ===================================
+
+        for ticker, row in rows.items():
+
+            price = row["Close"]
+
+            if self.prev_price[ticker] is not None:
+                ret = np.log(price / self.prev_price[ticker])
+                self.returns_history[ticker].append(ret)
+
+            self.prev_price[ticker] = price
+            self.current_prices[ticker] = price
+
+        # ===================================
+        # ENTRY LOGIC
+        # ===================================
+
+        self.strategy.process_entries(
+            engine=self,
+            rows=rows,
+            ticker_contexts=ticker_contexts
+        )
+
+        # ===================================
+        # EQUITY
+        # ===================================
+
         self.update_equity(date)
 
     # -------------------------------
