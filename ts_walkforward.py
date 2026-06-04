@@ -9,6 +9,8 @@ from ts_features import (
 from ts_model import XGBModel
 from ts_backtest import BacktestEngine
 from ts_reversal_detection import train_lstm
+from ts_strategies.ts_stat_arb import StatArb
+from ts_strategies.ts_main_strat import MainStrat
 
 
 def run_walkforward_backtest(
@@ -31,9 +33,9 @@ def run_walkforward_backtest(
 
         raw_data[ticker] = df
 
-    engine = BacktestEngine(
-        initial_capital=initial_capital
-    )
+    engine = BacktestEngine(initial_capital=initial_capital, strategy = MainStrat())
+
+    statarb_engine = BacktestEngine(initial_capital=initial_capital, strategy = StatArb(tickers=tickers, date = None))
 
     all_predictions = []
 
@@ -236,11 +238,16 @@ def run_walkforward_backtest(
         # UPDATE ENGINE HMM AND LSTM MODELS
         # =====================================================
         engine.hmm_models = fold_hmm_models
+        statarb_engine.hmm_models = fold_hmm_models
         engine.down_states = fold_down_states
+        statarb_engine.down_states = fold_down_states
         engine.up_states = fold_up_states
+        statarb_engine.up_states = fold_up_states
 
         engine.lstm_models = fold_lstm_models
+        statarb_engine.lstm_models = fold_lstm_models
         engine.lstm_scalers = fold_lstm_scalers
+        statarb_engine.lstm_scalers = fold_lstm_scalers
 
         # =====================================================
         # PREDICTION LOOP
@@ -305,6 +312,13 @@ def run_walkforward_backtest(
                 predictions=day_predictions,
                 lookback_windows=day_lookbacks
             )
+
+            """statarb_engine.step(
+                date=current_date,
+                rows=day_rows,
+                predictions=day_predictions,
+                lookback_windows=day_lookbacks
+            )"""
 
         print(f"\nFold {fold_idx + 1} complete")
 

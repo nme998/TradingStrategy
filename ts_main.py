@@ -53,6 +53,7 @@ print("Max Drawdown:", metrics.max_drawdown())
 print("Win Rate:", metrics.win_rate(trade_pnls))
 print("Profit Factor:", metrics.profit_factor(trade_pnls))
 print("Expectancy:", metrics.expectancy(trade_pnls))
+print("CAGR:", metrics.CAGR())
 
 # -------------------- DEBUG SECTION --------------------
 print("\n=== DEBUG INFO ===")

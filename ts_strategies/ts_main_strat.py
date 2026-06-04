@@ -120,6 +120,95 @@ class MainStrat:
                 size *= 0.8
 
         return size
+    
+    def update_trades(self, engine, ticker, price, context):
+        if ticker not in engine.open_trades:
+            return
+
+        for trade in engine.open_trades[ticker][:]:
+
+            trade.holding_days += 1
+
+            if trade.strategy == "high_vol":
+                atr = engine.get_atr(ticker)
+
+                if trade.type == "long":
+                    new_stop = price - 1.5 * atr
+                    trade.stop_loss = max(trade.stop_loss, new_stop)
+
+                elif trade.type == "short":
+                    new_stop = price + 1.5 * atr
+                    trade.stop_loss = min(trade.stop_loss, new_stop)
+
+
+                exit_score = self.compute_exit_score(engine.exit_threshold, trade, ticker, price, context.signal, context.lookback_window)
+
+                if exit_score >= 3:
+                    engine.stats["exits_score"] += 1
+                    engine.close_trade(ticker, trade, price, context.date, "SCORE_EXIT")
+                    engine.open_trades[ticker].remove(trade)
+                    continue
+
+                if trade.type == "long":
+                    # Stop loss
+                    if price <= trade.stop_loss:
+                        engine.stats["exits_stop_loss"] += 1
+                        engine.close_trade(ticker, trade, price, context.date, "SL")
+                        engine.open_trades[ticker].remove(trade)
+                        continue
+                    
+                    # Take profit
+                    if price >= trade.take_profit:
+                        engine.stats["exits_take_profit"] += 1
+                        engine.close_trade(ticker, trade, price, context.date, "TP")
+                        engine.open_trades[ticker].remove(trade)
+                        continue
+                    
+                elif trade.type == "short":
+                    if price >= trade.stop_loss:
+                        engine.stats["exits_stop_loss"] += 1
+                        engine.close_trade(ticker, trade, price, context.date, "SL")
+                        engine.open_trades[ticker].remove(trade)
+                        continue
+
+                    if price <= trade.take_profit:
+                        engine.stats["exits_take_profit"] += 1
+                        engine.close_trade(ticker, trade, price, context.date, "TP")
+                        engine.open_trades[ticker].remove(trade)
+                        continue
+
+            elif trade.strategy == "low_vol":
+                unrealized_pnl = ((price - trade.entry_price) * trade.size * trade.direction)
+                if unrealized_pnl > 0:
+                    if abs(context.signal) < engine.exit_threshold * 0.5:
+                        engine.stats["exits_take_profit"] += 1
+                        engine.close_trade(ticker, trade, price, context.date, "PROTECT")
+                        engine.open_trades[ticker].remove(trade)
+                        continue
+                
+                if trade.type == "long":
+                    # Stop loss
+                    if price <= trade.stop_loss:
+                        engine.stats["exits_stop_loss"] += 1
+                        engine.close_trade(ticker, trade, price, context.date, "SL")
+                        engine.open_trades[ticker].remove(trade)
+                        continue
+
+                elif trade.type == "short":
+                    if price >= trade.stop_loss:
+                        engine.stats["exits_stop_loss"] += 1
+                        engine.close_trade(ticker, trade, price, context.date, "SL")
+                        engine.open_trades[ticker].remove(trade)
+                        continue
+                    
+            if trade.holding_days >= engine.min_hold_days:
+                trade_score = context.signal * trade.direction
+                # --- HARD REVERSAL ---
+                if trade_score < -engine.exit_threshold:
+                    engine.stats["exits_signal"] += 1
+                    engine.close_trade(ticker, trade, price, context.date, "REV")
+                    engine.open_trades[ticker].remove(trade)
+                    continue
 
     def process_entries(self, engine, rows, ticker_contexts):
 
@@ -143,6 +232,10 @@ class MainStrat:
                 continue
 
             if score < 6:
+                engine.stats["entries_skipped_score"] += 1
+                continue
+
+            if context.confidence < 0.5:
                 engine.stats["entries_skipped_score"] += 1
                 continue
 

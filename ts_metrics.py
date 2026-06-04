@@ -65,4 +65,14 @@ class PerformanceMetrics:
         avg_loss = -np.mean(losses) if losses else 0
         return (avg_win * win_rate) - (avg_loss * loss_rate)
     
-#TODO: Add more metrics - Sortino ratio, Calmar ratio, CAGR, alpha/beta, ValueatRisk, Volatility, Exposure.
+    def CAGR(self):
+        """
+        Compound Annual Growth Rate
+        """
+        total_return = self.equity_curve.iloc[-1] / self.equity_curve.iloc[0] - 1
+        n_years = len(self.equity_curve) / 252  
+        if n_years == 0:
+            return np.nan
+        return (1 + total_return) ** (1/n_years) - 1
+    
+#TODO: Add more metrics - Sortino ratio, Calmar ratio, alpha/beta, ValueatRisk, Volatility, Exposure.

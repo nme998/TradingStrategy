@@ -2,6 +2,7 @@ import numpy as np
 from ts_reversal_detection import detect_reversal
 from ts_backtest_functions import  BacktestFunctions
 from ts_strategies.ts_main_strat import MainStrat
+from ts_strategies.ts_stat_arb import StatArb
 
 
 class Trade:
@@ -220,8 +221,7 @@ class BacktestEngine(BacktestFunctions):
                     new_stop = price + 1.5 * atr
                     trade.stop_loss = min(trade.stop_loss, new_stop)
 
-                
-                
+
                 exit_score = self.strategy.compute_exit_score(self.exit_threshold, trade, ticker, price, context.signal, context.lookback_window)
 
                 if exit_score >= 3:
@@ -274,14 +274,7 @@ class BacktestEngine(BacktestFunctions):
                         self.close_trade(ticker, trade, price, context.date, "SL")
                         self.open_trades[ticker].remove(trade)
                         continue
-                    '''
-                    # Take profit
-                    if price >= trade.take_profit:
-                        self.stats["exits_take_profit"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "TP")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-                    '''
+
                 elif trade.type == "short":
                     if price >= trade.stop_loss:
                         self.stats["exits_stop_loss"] += 1
@@ -289,31 +282,14 @@ class BacktestEngine(BacktestFunctions):
                         self.open_trades[ticker].remove(trade)
                         continue
                     
-                    '''
-                    if price <= trade.take_profit:
-                        self.stats["exits_take_profit"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "TP")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-                    '''
             if trade.holding_days >= self.min_hold_days:
-
                 trade_score = context.signal * trade.direction
-                
                 # --- HARD REVERSAL ---
                 if trade_score < -self.exit_threshold:
                     self.stats["exits_signal"] += 1
                     self.close_trade(ticker, trade, price, context.date, "REV")
                     self.open_trades[ticker].remove(trade)
                     continue
-                '''
-                # --- WEAK SIGNAL ---
-                if abs(context.signal) < self.exit_threshold * 0.5:
-                    self.stats["exits_signal"] += 1
-                    self.close_trade(ticker, trade, price, context.date, "WEAK")
-                    self.open_trades[ticker].remove(trade)
-                    continue
-                '''
     # -------------------------------
     # STEP FUNCTION
     # -------------------------------
@@ -357,43 +333,15 @@ class BacktestEngine(BacktestFunctions):
             self.low_history[ticker].append(low)
 
             atr = self.get_atr(ticker)
-
-            # -------------------------------
-            # SIGNAL PIPELINE
-            # -------------------------------
-
             raw_signal = self.compute_raw_signal(prediction)
             signal = self.normalize_signal(ticker, raw_signal)
             regime = self.get_current_regime(ticker)
-
-            entropy = self.calculate_permutation_entropy(
-                lookback_window["return"],
-                dx=3
-            )
-
+            entropy = self.calculate_permutation_entropy(lookback_window["return"], dx=3)
             trend = self.trend_filter(ticker, price)
-
-            confidence = self.compute_confidence(
-                ticker,
-                prediction,
-                signal,
-                regime,
-                price,
-                lookback_window
-            )
-
-            context = TradeContext(
-                prediction=prediction,
-                raw_signal=raw_signal,
-                signal=signal,
-                confidence=confidence,
-                regime=regime,
-                entropy=entropy,
-                trend=trend,
-                atr=atr,
-                lookback_window=lookback_window,
-                date=date
-            )
+            confidence = self.compute_confidence(ticker, prediction, signal, regime,  price, lookback_window)
+            
+            context = TradeContext(prediction=prediction, raw_signal=raw_signal, signal=signal, confidence=confidence,
+                regime=regime, entropy=entropy, trend=trend, atr=atr, lookback_window=lookback_window,  date=date)
 
             ticker_contexts[ticker] = context
 
@@ -403,11 +351,17 @@ class BacktestEngine(BacktestFunctions):
 
         for ticker, row in rows.items():
 
-            self.update_trades(
-                ticker,
-                row["Close"],
-                ticker_contexts[ticker]
-            )
+            
+            if isinstance(self.strategy, MainStrat):
+                self.strategy.update_trades(engine = self, ticker = ticker, price = row["Close"], context = ticker_contexts[ticker])
+                #self.update_trades(ticker, row["Close"], ticker_contexts[ticker])
+            elif isinstance(self.strategy, StatArb):
+                self.strategy.update_trades(
+                    self,
+                    ticker,
+                    row["Close"],
+                    ticker_contexts[ticker]
+                )
 
         # ===================================
         # UPDATE RETURNS
@@ -428,11 +382,10 @@ class BacktestEngine(BacktestFunctions):
         # ENTRY LOGIC
         # ===================================
 
-        self.strategy.process_entries(
-            engine=self,
-            rows=rows,
-            ticker_contexts=ticker_contexts
-        )
+        if isinstance(self.strategy, MainStrat):
+            self.strategy.process_entries(engine=self, rows=rows, ticker_contexts=ticker_contexts)
+        elif isinstance(self.strategy, StatArb):
+            self.strategy.process_entries(engine=self, rows=rows, ticker_contexts=ticker_contexts, current_date=date)
 
         # ===================================
         # EQUITY
@@ -454,11 +407,7 @@ class BacktestEngine(BacktestFunctions):
             current_price = self.current_prices[ticker]
 
             for trade in self.open_trades[ticker]:
-                unrealized += (
-                    (current_price - trade.entry_price)
-                    * trade.size
-                    * trade.direction
-                )
+                unrealized += ((current_price - trade.entry_price) * trade.size * trade.direction)
 
         total_equity = self.capital + unrealized
 

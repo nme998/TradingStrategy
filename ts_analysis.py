@@ -211,7 +211,7 @@ def plot_relationship(x_col, y_col, title):
 
     plt.axhline(0, color="black", linewidth=1)
 
-    plt.show()
+    #plt.show()
 
     corr = df[[x_col, y_col]].corr().iloc[0, 1]
     print(f"{title} correlation: {corr:.4f}")

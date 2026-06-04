@@ -162,7 +162,6 @@ def get_feature_data(ticker):
     start = end - datetime.timedelta(days=365 * 10)
 
     df = yf.download(ticker, start=start, end=end)
-    print("LAST ROW OF YF PULL: ", df.tail(3))
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
 
