@@ -17,7 +17,7 @@ class PerformanceMetrics:
         self.equity_curve = equity_curve
         self.returns = self.equity_curve.pct_change().fillna(0)
 
-    def sharpe_ratio(self, risk_free_rate=0.0):
+    def sharpe_ratio(self, risk_free_rate=0.03):
         """
         Annualized Sharpe Ratio
         """
@@ -74,5 +74,44 @@ class PerformanceMetrics:
         if n_years == 0:
             return np.nan
         return (1 + total_return) ** (1/n_years) - 1
+
+    def sortino_ratio(self, risk_free_rate=0.03):
+        """
+        Annualized Sortino Ratio
+        """
+        excess_returns = self.returns - (risk_free_rate / 252)
+
+        downside_returns = excess_returns[excess_returns < 0]
+        downside_std = downside_returns.std()
+
+        if downside_std == 0 or np.isnan(downside_std):
+            return np.nan
+
+        return excess_returns.mean() / downside_std * np.sqrt(252)
+
+
+    def value_at_risk(self, confidence=0.95):
+        """
+        Historical Value at Risk (VaR)
+
+        Returns the expected one-day loss at the chosen confidence level.
+        Example:
+            confidence=0.95 -> 5th percentile
+        """
+        percentile = (1 - confidence) * 100
+        return np.percentile(self.returns, percentile)
+
+
+    def calmar_ratio(self):
+        """
+        Annualized Calmar Ratio
+        """
+        cagr = self.CAGR()
+        max_dd = abs(self.max_drawdown())
+
+        if max_dd == 0:
+            return np.nan
+
+        return cagr / max_dd
     
 #TODO: Add more metrics - Sortino ratio, Calmar ratio, alpha/beta, ValueatRisk, Volatility, Exposure.

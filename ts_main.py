@@ -3,8 +3,10 @@ from ts_metrics import PerformanceMetrics
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from itertools import chain
 
-tickers = ["TSLA", "AAPL", "MSFT", "AMZN", "NVDA"]
+#tickers = ["AAPL", "MSFT", "AMZN", "NVDA", "AMD", "GOOGL", "META"]
+tickers = ["JPM", "BAC", "WFC", "C", "GS", "MS"]
 
 engine, all_predictions = run_walkforward_backtest(tickers)
 
@@ -43,27 +45,36 @@ metrics = PerformanceMetrics(equity_series)
 # Extract trade PnLs
 trade_pnls = [
     trade.pnl
-    for trades in engine.closed_trades.values()
+    for trades in chain(engine.closed_trades.values(), engine.closed_options_trades.values())
     for trade in trades
 ]
 
 print("\n=== PERFORMANCE METRICS ===")
 print("Sharpe Ratio:", metrics.sharpe_ratio())
+print("Sortino:", metrics.sortino_ratio())
 print("Max Drawdown:", metrics.max_drawdown())
 print("Win Rate:", metrics.win_rate(trade_pnls))
 print("Profit Factor:", metrics.profit_factor(trade_pnls))
 print("Expectancy:", metrics.expectancy(trade_pnls))
 print("CAGR:", metrics.CAGR())
+print("Calmar:", metrics.calmar_ratio())
+print("VaR (95%):", metrics.value_at_risk())
+print("CVaR (99%):", metrics.value_at_risk(confidence=0.99))
 
 # -------------------- DEBUG SECTION --------------------
 print("\n=== DEBUG INFO ===")
 
 total_trades = sum(
     len(trades)
-    for trades in engine.closed_trades.values()
+    for trades in chain(engine.closed_trades.values(), engine.closed_options_trades.values())
+)
+open_trades = sum(
+    len(trades)
+    for trades in chain(engine.open_trades.values(), engine.open_options_trades.values())
 )
 
 print("Total Trades:", total_trades)
+print("Open Trades:", open_trades)
 
 if trade_pnls:
     wins = [p for p in trade_pnls if p > 0]
@@ -86,14 +97,10 @@ engine.print_stats()
 
 rows = []
 
-for ticker, trades in engine.closed_trades.items():
-
+for ticker, trades in chain(engine.closed_trades.items(), engine.closed_options_trades.items()):
     for trade in trades:
-
         row = trade.__dict__.copy()
-
         row["ticker"] = ticker
-
         rows.append(row)
 
 df = pd.DataFrame(rows)

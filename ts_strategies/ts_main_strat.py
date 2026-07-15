@@ -145,7 +145,7 @@ class MainStrat:
 
                 if exit_score >= 3:
                     engine.stats["exits_score"] += 1
-                    engine.close_trade(ticker, trade, price, context.date, "SCORE_EXIT")
+                    engine.trade_manager.close_trade(ticker, trade, price, context.date, "SCORE_EXIT")
                     engine.open_trades[ticker].remove(trade)
                     continue
 
@@ -153,27 +153,27 @@ class MainStrat:
                     # Stop loss
                     if price <= trade.stop_loss:
                         engine.stats["exits_stop_loss"] += 1
-                        engine.close_trade(ticker, trade, price, context.date, "SL")
+                        engine.trade_manager.close_trade(ticker, trade, price, context.date, "SL")
                         engine.open_trades[ticker].remove(trade)
                         continue
                     
                     # Take profit
                     if price >= trade.take_profit:
                         engine.stats["exits_take_profit"] += 1
-                        engine.close_trade(ticker, trade, price, context.date, "TP")
+                        engine.trade_manager.close_trade(ticker, trade, price, context.date, "TP")
                         engine.open_trades[ticker].remove(trade)
                         continue
                     
                 elif trade.type == "short":
                     if price >= trade.stop_loss:
                         engine.stats["exits_stop_loss"] += 1
-                        engine.close_trade(ticker, trade, price, context.date, "SL")
+                        engine.trade_manager.close_trade(ticker, trade, price, context.date, "SL")
                         engine.open_trades[ticker].remove(trade)
                         continue
 
                     if price <= trade.take_profit:
                         engine.stats["exits_take_profit"] += 1
-                        engine.close_trade(ticker, trade, price, context.date, "TP")
+                        engine.trade_manager.close_trade(ticker, trade, price, context.date, "TP")
                         engine.open_trades[ticker].remove(trade)
                         continue
 
@@ -182,7 +182,7 @@ class MainStrat:
                 if unrealized_pnl > 0:
                     if abs(context.signal) < engine.exit_threshold * 0.5:
                         engine.stats["exits_take_profit"] += 1
-                        engine.close_trade(ticker, trade, price, context.date, "PROTECT")
+                        engine.trade_manager.close_trade(ticker, trade, price, context.date, "PROTECT")
                         engine.open_trades[ticker].remove(trade)
                         continue
                 
@@ -190,14 +190,14 @@ class MainStrat:
                     # Stop loss
                     if price <= trade.stop_loss:
                         engine.stats["exits_stop_loss"] += 1
-                        engine.close_trade(ticker, trade, price, context.date, "SL")
+                        engine.trade_manager.close_trade(ticker, trade, price, context.date, "SL")
                         engine.open_trades[ticker].remove(trade)
                         continue
 
                 elif trade.type == "short":
                     if price >= trade.stop_loss:
                         engine.stats["exits_stop_loss"] += 1
-                        engine.close_trade(ticker, trade, price, context.date, "SL")
+                        engine.trade_manager.close_trade(ticker, trade, price, context.date, "SL")
                         engine.open_trades[ticker].remove(trade)
                         continue
                     
@@ -206,7 +206,7 @@ class MainStrat:
                 # --- HARD REVERSAL ---
                 if trade_score < -engine.exit_threshold:
                     engine.stats["exits_signal"] += 1
-                    engine.close_trade(ticker, trade, price, context.date, "REV")
+                    engine.trade_manager.close_trade(ticker, trade, price, context.date, "REV")
                     engine.open_trades[ticker].remove(trade)
                     continue
 
@@ -271,11 +271,11 @@ class MainStrat:
             engine.stats["momentum_entries"] += 1
 
             if context.signal > 0:
-                engine.open_trade(ticker, fill_price, size, take_profit, stop_loss, score, "long", context)
+                engine.trade_manager.open_trade(ticker, fill_price, size, take_profit, stop_loss, score, "long", context)
                 engine.stats["entries_long"] += 1
 
             else:
-                engine.open_trade(ticker, fill_price, size, take_profit, stop_loss, score, "short", context)
+                engine.trade_manager.open_trade(ticker, fill_price, size, take_profit, stop_loss, score, "short", context)
                 engine.stats["entries_short"] += 1
 
             # strong signal add-on
@@ -285,9 +285,9 @@ class MainStrat:
                 engine.stats["momentum_entries"] += 1
 
                 if context.signal > 0:
-                    engine.open_trade( ticker, fill_price, size, take_profit, stop_loss, score, "long", context)
+                    engine.trade_manager.open_trade( ticker, fill_price, size, take_profit, stop_loss, score, "long", context)
                     engine.stats["entries_long"] += 1
 
                 else:
-                    engine.open_trade(ticker,  fill_price, size, take_profit, stop_loss, score, "short", context)
+                    engine.trade_manager.open_trade(ticker,  fill_price, size, take_profit, stop_loss, score, "short", context)
                     engine.stats["entries_short"] += 1

@@ -90,6 +90,70 @@ entropy_stats["win_rate"] = (
 print("\n--- ENTROPY ANALYSIS ---")
 print(entropy_stats)
 
+df["conf_decile"] = pd.qcut(df["confidence"], 10, duplicates="drop")
+
+conf_stats = df.groupby("conf_decile")["pnl"].agg(
+    trades="count",
+    mean_pnl="mean",
+    median_pnl="median",
+    total_pnl="sum",
+    std="std"
+)
+
+conf_stats["win_rate"] = (
+    df.groupby("conf_decile")["pnl"]
+      .apply(lambda x: (x > 0).mean() * 100)
+)
+
+print(conf_stats)
+
+df["score_decile"] = pd.qcut(df["score"], 10, duplicates="drop")
+
+score_stats = df.groupby("score_decile")["pnl"].agg(
+    trades="count",
+    mean_pnl="mean",
+    median_pnl="median",
+    total_pnl="sum",
+    std="std"
+)
+
+score_stats["win_rate"] = (
+    df.groupby("score_decile")["pnl"]
+      .apply(lambda x: (x > 0).mean() * 100)
+)
+
+print(score_stats)
+
+df["exit_date"] = pd.to_datetime(df["exit_date"])
+df["month"] = df["exit_date"].dt.month
+
+month_stats = df.groupby("month")["pnl"].agg(
+    trades="count",
+    mean_pnl="mean",
+    total_pnl="sum",
+    median_pnl="median"
+)
+
+month_stats["win_rate"] = (
+    df.groupby("month")["pnl"]
+      .apply(lambda x: (x > 0).mean() * 100)
+)
+
+print(month_stats.sort_index())
+
+df["entropy_bin"] = pd.qcut(df["entropy"], 4, duplicates="drop")
+df["conf_bin"] = pd.qcut(df["confidence"], 4, duplicates="drop")
+
+pivot = pd.pivot_table(
+    df,
+    values="pnl",
+    index="entropy_bin",
+    columns="conf_bin",
+    aggfunc="mean"
+)
+
+print(pivot)
+
 # ----------------------------
 # Date buckets
 # ----------------------------

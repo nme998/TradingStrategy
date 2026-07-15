@@ -3,42 +3,9 @@ from ts_reversal_detection import detect_reversal
 from ts_backtest_functions import  BacktestFunctions
 from ts_strategies.ts_main_strat import MainStrat
 from ts_strategies.ts_stat_arb import StatArb
-
-
-class Trade:
-    next_id = 0
-
-    def __init__(self, entry_price, size, direction, stop_loss, take_profit, entry_date, strategy, type):
-        self.trade_id = Trade.next_id
-        Trade.next_id += 1
-        self.entry_price = entry_price
-        self.size = size
-        self.direction = direction
-        self.stop_loss = stop_loss
-        self.take_profit = take_profit
-        self.entry_date = entry_date
-        self.strategy = strategy
-        self.type = type
-        self.score = 0
-
-        self.is_open = True
-        self.exit_price = None
-        self.exit_date = None
-        self.pnl = 0
-
-        self.entry_slippage = 0
-        self.exit_slippage = 0
-        self.transaction_cost = 0
-        self.pyramid = 0
-
-        self.holding_days = 0
-
-        self.prediction = None
-        self.signal = None
-        self.confidence = None
-        self.regime = None
-        self.entropy = None
-        self.trend = None
+from ts_strategies.ts_options_vol import OptionsVolatility
+from ts_trade_manager import Trade, TradeManager
+from ts_trade_manager_options import OptionTradeManager
 
 class TradeContext:
     def __init__(self, prediction, raw_signal, signal, confidence, regime, entropy, trend, atr, lookback_window, date):
@@ -61,6 +28,12 @@ class BacktestEngine(BacktestFunctions):
                  lstm_models=None, lstm_scalers=None, strategy=None):
 
         self.strategy = strategy or MainStrat()
+        if isinstance(self.strategy, OptionsVolatility):
+            self.trade_manager = OptionTradeManager(self)
+        else:
+            self.trade_manager = TradeManager(self)
+
+        self.strategy.trade_manager = self.trade_manager
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.risk_per_trade = risk_per_trade
@@ -74,7 +47,9 @@ class BacktestEngine(BacktestFunctions):
         self.lstm_scalers = lstm_scalers
 
         self.open_trades = {}
+        self.open_options_trades = {}
         self.closed_trades = {}
+        self.closed_options_trades = {}
 
         self.equity_curve = []
         self.dates = []
@@ -117,201 +92,17 @@ class BacktestEngine(BacktestFunctions):
             "exits_score": 0
         }
 
-    # -------------------------------
-    # TRADE MANAGEMENT
-    # -------------------------------
-
-    def open_trade(self, ticker, fill_price, size, take_profit, stop_loss, score, type, context):
-
-        direction = 1 if context.signal > 0 else -1
-        slippage = context.atr * self.slippage_factor
-        if size <= 0:
-            return
-
-        trade = Trade(fill_price, size, direction, stop_loss, take_profit, context.date, context.regime, type)
-        if ticker not in self.open_trades:
-            self.open_trades[ticker] = []
-        self.open_trades[ticker].append(trade)
-
-        trade.entry_slippage = slippage
-        trade.prediction = context.prediction
-        trade.signal = context.signal
-        trade.confidence = context.confidence
-        trade.regime = context.regime
-        trade.entropy = context.entropy
-        trade.trend = context.trend
-        trade.score = score
-
-        side = "BUY" if direction == 1 else "SELL"
-        #print(f"{side} Signal: {ticker} |  Date: {date} | Price: {price:.2f} | Size: {size:.2f} | SL: {stop_loss:.2f} | TP: {take_profit:.2f} | Confidence: {confidence:.2f}")
-
-    def close_trade(self, ticker, trade, price, date, reason):
-
-        atr = self.get_atr(ticker)
-
-        slippage = atr * self.slippage_factor
-
-        if trade.direction == 1:
-            exit_fill = price - slippage
-        else:
-            exit_fill = price + slippage
-
-        trade_value = (
-            abs(trade.entry_price * trade.size)
-            +
-            abs(exit_fill * trade.size)
-        )
-
-        transaction_cost = (
-            trade_value * self.transaction_cost_pct
-        )
-
-        trade.is_open = False
-        trade.exit_price = exit_fill
-        trade.exit_date = date
-        trade.exit_slippage = slippage
-        trade.transaction_cost = transaction_cost
-
-        gross_pnl = (
-            (exit_fill - trade.entry_price)
-            * trade.size
-            * trade.direction
-        )
-
-        trade.pnl = gross_pnl - transaction_cost
-
-        self.capital += trade.pnl
-
-        if ticker not in self.closed_trades:
-            self.closed_trades[ticker] = []
-
-        self.closed_trades[ticker].append(trade)
-
-        '''
-        print(
-            f"[{ticker}] [{reason}] "
-            f"EntryDate ({trade.entry_date}) "
-            f"Entry {trade.entry_price:.2f} → "
-            f"ExitDate ({trade.exit_date}) "
-            f"Exit {price:.2f} | "
-            f"PnL {trade.pnl:.2f}"
-        )
-        '''
-    # -------------------------------
-    # UPDATE TRADES
-    # -------------------------------
-
-    def update_trades(self, ticker, price, context):
-
-        if ticker not in self.open_trades:
-            return
-
-        for trade in self.open_trades[ticker][:]:
-
-            trade.holding_days += 1
-
-            if trade.strategy == "high_vol":
-                atr = self.get_atr(ticker)
-
-                if trade.type == "long":
-                    new_stop = price - 1.5 * atr
-                    trade.stop_loss = max(trade.stop_loss, new_stop)
-
-                elif trade.type == "short":
-                    new_stop = price + 1.5 * atr
-                    trade.stop_loss = min(trade.stop_loss, new_stop)
-
-
-                exit_score = self.strategy.compute_exit_score(self.exit_threshold, trade, ticker, price, context.signal, context.lookback_window)
-
-                if exit_score >= 3:
-                    self.stats["exits_score"] += 1
-                    self.close_trade(ticker, trade, price, context.date, "SCORE_EXIT")
-                    self.open_trades[ticker].remove(trade)
-                    continue
-
-                if trade.type == "long":
-                    # Stop loss
-                    if price <= trade.stop_loss:
-                        self.stats["exits_stop_loss"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "SL")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-                    
-                    # Take profit
-                    if price >= trade.take_profit:
-                        self.stats["exits_take_profit"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "TP")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-                    
-                elif trade.type == "short":
-                    if price >= trade.stop_loss:
-                        self.stats["exits_stop_loss"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "SL")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-
-                    if price <= trade.take_profit:
-                        self.stats["exits_take_profit"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "TP")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-
-            elif trade.strategy == "low_vol":
-                unrealized_pnl = ((price - trade.entry_price) * trade.size * trade.direction)
-                if unrealized_pnl > 0:
-                    if abs(context.signal) < self.exit_threshold * 0.5:
-                        self.stats["exits_take_profit"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "PROTECT")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-                
-                if trade.type == "long":
-                    # Stop loss
-                    if price <= trade.stop_loss:
-                        self.stats["exits_stop_loss"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "SL")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-
-                elif trade.type == "short":
-                    if price >= trade.stop_loss:
-                        self.stats["exits_stop_loss"] += 1
-                        self.close_trade(ticker, trade, price, context.date, "SL")
-                        self.open_trades[ticker].remove(trade)
-                        continue
-                    
-            if trade.holding_days >= self.min_hold_days:
-                trade_score = context.signal * trade.direction
-                # --- HARD REVERSAL ---
-                if trade_score < -self.exit_threshold:
-                    self.stats["exits_signal"] += 1
-                    self.close_trade(ticker, trade, price, context.date, "REV")
-                    self.open_trades[ticker].remove(trade)
-                    continue
-    # -------------------------------
-    # STEP FUNCTION
-    # -------------------------------
-    def step(self, date, rows, predictions, lookback_windows):
-
+    def step(self, date, rows, predictions, lookback_windows, vol_predictions=None, stat_arb_lookbacks=None):
         ticker_contexts = {}
-
-        # ===================================
-        # BUILD CONTEXT FOR EVERY TICKER
-        # ===================================
-
         for ticker, row in rows.items():
 
             price = row["Close"]
             high = row["High"]
             low = row["Low"]
             prediction = predictions[ticker]
+            vol_prediction = vol_predictions[ticker] if vol_predictions is not None else None
             lookback_window = lookback_windows[ticker]
-
-            # -------------------------------
-            # INIT STORAGE
-            # -------------------------------
+            #print("LOOKBACK COLUMNS:", lookback_window.columns.tolist())
 
             if ticker not in self.prev_price:
                 self.prev_price[ticker] = None
@@ -323,10 +114,6 @@ class BacktestEngine(BacktestFunctions):
                 self.price_history[ticker] = []
                 self.high_history[ticker] = []
                 self.low_history[ticker] = []
-
-            # -------------------------------
-            # ATR
-            # -------------------------------
 
             self.price_history[ticker].append(price)
             self.high_history[ticker].append(high)
@@ -348,25 +135,17 @@ class BacktestEngine(BacktestFunctions):
         # ===================================
         # UPDATE OPEN TRADES
         # ===================================
-
         for ticker, row in rows.items():
-
-            
             if isinstance(self.strategy, MainStrat):
                 self.strategy.update_trades(engine = self, ticker = ticker, price = row["Close"], context = ticker_contexts[ticker])
-                #self.update_trades(ticker, row["Close"], ticker_contexts[ticker])
-            elif isinstance(self.strategy, StatArb):
-                self.strategy.update_trades(
-                    self,
-                    ticker,
-                    row["Close"],
-                    ticker_contexts[ticker]
-                )
+                
+            if isinstance(self.strategy, OptionsVolatility):
+                self.strategy.update_trades(engine = self, ticker = ticker, row = row, volatility_prediction = vol_prediction, regime = regime, lookback_windows = lookback_windows)
 
-        # ===================================
-        # UPDATE RETURNS
-        # ===================================
+        if isinstance(self.strategy, StatArb):
+            self.strategy.update_trades(engine = self, ticker_contexts = ticker_contexts, current_date = date, stat_arb_lookbacks = stat_arb_lookbacks)
 
+        
         for ticker, row in rows.items():
 
             price = row["Close"]
@@ -381,43 +160,32 @@ class BacktestEngine(BacktestFunctions):
         # ===================================
         # ENTRY LOGIC
         # ===================================
-
-        if isinstance(self.strategy, MainStrat):
+        if isinstance(self.strategy, MainStrat): #and date.month in (5, 6, 7):
             self.strategy.process_entries(engine=self, rows=rows, ticker_contexts=ticker_contexts)
         elif isinstance(self.strategy, StatArb):
-            self.strategy.process_entries(engine=self, rows=rows, ticker_contexts=ticker_contexts, current_date=date)
-
-        # ===================================
-        # EQUITY
-        # ===================================
+            self.strategy.process_entries(engine=self, rows=rows, ticker_contexts=ticker_contexts, current_date=date, stat_arb_lookbacks=stat_arb_lookbacks)
+        elif isinstance(self.strategy, OptionsVolatility):
+            self.strategy.process_entries(engine=self, rows=rows, volatility_predictions=vol_predictions, return_predictions=predictions, regime = regime, lookback_windows=lookback_windows)
 
         self.update_equity(date)
 
-    # -------------------------------
-    # EQUITY
-    # -------------------------------
-
     def update_equity(self, date):
         unrealized = 0
-
         for ticker in self.open_trades:
             if ticker not in self.current_prices:
                 continue
 
             current_price = self.current_prices[ticker]
-
             for trade in self.open_trades[ticker]:
                 unrealized += ((current_price - trade.entry_price) * trade.size * trade.direction)
 
         total_equity = self.capital + unrealized
-
         self.equity_curve.append(total_equity)
         self.dates.append(date)
 
     # -------------------------------
     # DEBUG
     # -------------------------------
-
     def print_stats(self):
         print("\n=== TRADE DEBUG STATS ===")
         for k, v in self.stats.items():
