@@ -229,3 +229,100 @@ class BacktestFunctions:
     def calculate_permutation_entropy(self, returns, dx=3):
         entropy =  permutation_entropy(returns, dx=dx, normalized=True)
         return entropy
+    
+    def calculate_model_confidence(self, model, X_val, y_val, input_df):
+        """
+        Calculates model confidence based on historical validation performance.
+
+        Returns:
+        - direction_confidence: accuracy of predicting return direction
+        - magnitude_confidence: reliability of predicted return magnitude
+        - live prediction returns
+        """
+
+        # ==========================================
+        # Validation predictions
+        # ==========================================
+
+        val_predictions = model.predict(X_val)
+
+        # Convert to numpy
+        val_predictions = np.array(val_predictions)
+        y_val = np.array(y_val)
+
+
+        # ==========================================
+        # 1. Direction Confidence
+        # ==========================================
+
+        # Compare signs of predicted vs actual returns
+        predicted_direction = np.sign(val_predictions)
+        actual_direction = np.sign(y_val)
+
+        direction_accuracy = (
+            predicted_direction == actual_direction
+        ).mean()
+
+        direction_confidence = direction_accuracy * 100
+
+
+        # ==========================================
+        # 2. Magnitude Confidence
+        # ==========================================
+
+        # Absolute return prediction error
+        magnitude_error = np.abs(
+            val_predictions - y_val
+        )
+
+        mean_magnitude_error = magnitude_error.mean()
+
+        # Convert error into confidence
+        # Lower error = higher confidence
+        magnitude_confidence = max(
+            0,
+            min(
+                100,
+                (1 - mean_magnitude_error) * 100
+            )
+        )
+
+
+        # ==========================================
+        # Live prediction
+        # ==========================================
+
+        live_prediction = model.predict(input_df)
+
+        live_prediction = np.array(live_prediction)
+
+
+        live_direction = np.sign(
+            live_prediction
+        )
+
+
+        live_return = live_prediction.mean()
+
+
+        return {
+
+            # Confidence metrics
+            "direction_confidence": direction_confidence,
+
+            "magnitude_confidence": magnitude_confidence,
+
+
+            # Current prediction
+            "predicted_returns": live_prediction,
+
+            "predicted_return_mean": live_return,
+
+            "predicted_direction": live_direction,
+
+
+            # Debug metrics
+            "validation_direction_accuracy": direction_accuracy,
+
+            "mean_prediction_error": mean_magnitude_error
+        }

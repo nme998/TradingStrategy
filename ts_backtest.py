@@ -28,12 +28,11 @@ class BacktestEngine(BacktestFunctions):
                  lstm_models=None, lstm_scalers=None, strategy=None):
 
         self.strategy = strategy or MainStrat()
-        if isinstance(self.strategy, OptionsVolatility):
-            self.trade_manager = OptionTradeManager(self)
-        else:
-            self.trade_manager = TradeManager(self)
+        self.trade_manager = TradeManager(self)
+        self.option_trade_manager = OptionTradeManager(self)
 
         self.strategy.trade_manager = self.trade_manager
+        self.strategy.option_trade_manager = self.option_trade_manager
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.risk_per_trade = risk_per_trade
@@ -50,6 +49,13 @@ class BacktestEngine(BacktestFunctions):
         self.open_options_trades = {}
         self.closed_trades = {}
         self.closed_options_trades = {}
+
+        self.portfolio_delta = 0
+        self.portfolio_gamma = 0
+        self.portfolio_theta = 0
+        self.portfolio_vega = 0
+        self.portfolio_risk = 0
+        self.portfolio_option_value = 0
 
         self.equity_curve = []
         self.dates = []
@@ -160,7 +166,7 @@ class BacktestEngine(BacktestFunctions):
         # ===================================
         # ENTRY LOGIC
         # ===================================
-        if isinstance(self.strategy, MainStrat): #and date.month in (5, 6, 7):
+        if isinstance(self.strategy, MainStrat) and date.month in (5, 6, 7):
             self.strategy.process_entries(engine=self, rows=rows, ticker_contexts=ticker_contexts)
         elif isinstance(self.strategy, StatArb):
             self.strategy.process_entries(engine=self, rows=rows, ticker_contexts=ticker_contexts, current_date=date, stat_arb_lookbacks=stat_arb_lookbacks)

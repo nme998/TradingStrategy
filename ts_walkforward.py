@@ -9,6 +9,103 @@ from ts_strategies.ts_stat_arb import StatArb
 from ts_strategies.ts_main_strat import MainStrat
 from ts_options_features import (add_volatility_features, add_volatility_targets)
 
+def calculate_model_confidence(model, X_val, y_val, input_df):
+    """
+    Calculates model confidence based on historical validation performance.
+
+    Returns:
+    - direction_confidence: accuracy of predicting return direction
+    - magnitude_confidence: reliability of predicted return magnitude
+    - live prediction returns
+    """
+
+    # ==========================================
+    # Validation predictions
+    # ==========================================
+
+    val_predictions = model.predict(X_val)
+
+    # Convert to numpy
+    val_predictions = np.array(val_predictions)
+    y_val = np.array(y_val)
+
+
+    # ==========================================
+    # 1. Direction Confidence
+    # ==========================================
+
+    # Compare signs of predicted vs actual returns
+    predicted_direction = np.sign(val_predictions)
+    actual_direction = np.sign(y_val)
+
+    direction_accuracy = (
+        predicted_direction == actual_direction
+    ).mean()
+
+    direction_confidence = direction_accuracy * 100
+
+
+    # ==========================================
+    # 2. Magnitude Confidence
+    # ==========================================
+
+    # Absolute return prediction error
+    magnitude_error = np.abs(
+        val_predictions - y_val
+    )
+
+    mean_magnitude_error = magnitude_error.mean()
+
+    # Convert error into confidence
+    # Lower error = higher confidence
+    magnitude_confidence = max(
+        0,
+        min(
+            100,
+            (1 - mean_magnitude_error) * 100
+        )
+    )
+
+
+    # ==========================================
+    # Live prediction
+    # ==========================================
+
+    live_prediction = model.predict(input_df)
+
+    live_prediction = np.array(live_prediction)
+
+
+    live_direction = np.sign(
+        live_prediction
+    )
+
+
+    live_return = live_prediction.mean()
+
+
+    return {
+
+        # Confidence metrics
+        "direction_confidence": direction_confidence,
+
+        "magnitude_confidence": magnitude_confidence,
+
+
+        # Current prediction
+        "predicted_returns": live_prediction,
+
+        "predicted_return_mean": live_return,
+
+        "predicted_direction": live_direction,
+
+
+        # Debug metrics
+        "validation_direction_accuracy": direction_accuracy,
+
+        "mean_prediction_error": mean_magnitude_error
+    }
+
 
 def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback=50, rolling_years=5, trading_days_per_year=252):
     raw_data = {}
@@ -17,10 +114,9 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
         df = df.sort_index()
         raw_data[ticker] = df
 
-    ##engine = BacktestEngine(initial_capital=initial_capital)
-    engine = BacktestEngine(initial_capital=initial_capital, strategy = OptionsVolatility())
-    #engine.strategy = MainStrat()
-    #engine.strategy = StatArb(tickers=tickers)
+    engine = BacktestEngine(initial_capital=initial_capital, strategy = MainStrat())
+    #engine = BacktestEngine(initial_capital=initial_capital, strategy = StatArb(tickers=tickers))
+    #engine = BacktestEngine(initial_capital=initial_capital, strategy = OptionsVolatility())
 
     all_predictions = []
 
@@ -135,14 +231,22 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
         # =====================================================
         # FORCE COLUMN ORDER
         # =====================================================
+        validation_size = 250 * len(tickers)
         target_cols = ["target_1", "target_2", "target_3"]
         feature_cols = [c for c in train_df.columns if c not in (target_cols + ["Ticker"])]
 
         train_df = train_df[feature_cols + target_cols + ["Ticker"]]
         test_df = test_df[feature_cols + target_cols + ["Ticker"]]
-
+ 
         train_df = train_df.replace([np.inf, -np.inf], np.nan)
         test_df = test_df.replace([np.inf, -np.inf], np.nan)
+
+        validation_size = 250 * len(tickers)
+        val_df = train_df.tail(validation_size).copy()
+        train_df = train_df.iloc[:-validation_size].copy()
+
+        X_val = val_df[feature_cols].copy()
+        y_val = val_df[target_cols]
 
         train_df = train_df.dropna(subset=["target_1", "target_2", "target_3"])
 
@@ -181,6 +285,20 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
         vol_model = XGBModel(n_forecast=3)
         vol_model.train(train_vol_df)
 
+        val_predictions = []
+
+        for _, row in X_val.iterrows():
+            prediction = model.predict(row)
+
+            val_predictions.append({
+                "Ticker": row["Ticker"],
+                "Date": row.name,
+                "prediction": prediction,
+                "actual_1": row["target_1"],
+                "actual_2": row["target_2"],
+                "actual_3": row["target_3"]
+            })
+
         # =====================================================
         # UPDATE ENGINE HMM AND LSTM MODELS
         # =====================================================
@@ -210,6 +328,13 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
             for _, row in date_df.iterrows():
                 ticker = row["Ticker"]
                 prediction = model.predict(row)
+                confidence = engine.calculate_model_confidence(
+                    model=model,
+                    X_val=X_val,
+                    y_val=y_val,
+                    input_df = row[feature_cols].to_frame().T
+                )
+                print(f"Confidence for {ticker} on {current_date}: {confidence['direction_confidence']} and {confidence['magnitude_confidence']}")
 
                 #/////////////////////////////////////////////////////////////////////////////////////////////////
                 vol_row = test_vol_df[
@@ -240,9 +365,13 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
             # ==========================================
             # SINGLE ENGINE CALL PER DATE
             # ==========================================
-            #engine.step(date=current_date, rows=day_rows, predictions=day_predictions, lookback_windows=day_lookbacks)
-            #engine.step(date=current_date, rows=day_rows, predictions=day_predictions, lookback_windows=day_lookbacks, stat_arb_lookbacks=statarb_lookback)
-            engine.step(date=current_date, rows=day_rows, predictions=day_predictions, lookback_windows=vol_lookbacks, vol_predictions=day_vol_predictions)
+            if isinstance(engine.strategy, MainStrat):
+                engine.step(date=current_date, rows=day_rows, predictions=day_predictions, lookback_windows=day_lookbacks)
+            elif isinstance(engine.strategy, StatArb):
+                engine.step(date=current_date, rows=day_rows, predictions=day_predictions, lookback_windows=day_lookbacks, stat_arb_lookbacks=statarb_lookback)
+            elif isinstance(engine.strategy, OptionsVolatility):
+                engine.step(date=current_date, rows=day_rows, predictions=day_predictions, lookback_windows=vol_lookbacks, vol_predictions=day_vol_predictions)
+            
 
         print(f"\nFold {fold_idx + 1} complete")
 

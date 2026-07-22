@@ -5,8 +5,8 @@ import pandas as pd
 import numpy as np
 from itertools import chain
 
-#tickers = ["AAPL", "MSFT", "AMZN", "NVDA", "AMD", "GOOGL", "META"]
-tickers = ["JPM", "BAC", "WFC", "C", "GS", "MS"]
+tickers = ["MSFT", "NVDA", "AMD", "GOOGL", "META", "MU", "MRVL", "SoXX"]
+#tickers = ["JPM", "BAC", "WFC", "C", "GS", "MS"]
 
 engine, all_predictions = run_walkforward_backtest(tickers)
 
@@ -59,7 +59,7 @@ print("Expectancy:", metrics.expectancy(trade_pnls))
 print("CAGR:", metrics.CAGR())
 print("Calmar:", metrics.calmar_ratio())
 print("VaR (95%):", metrics.value_at_risk())
-print("CVaR (99%):", metrics.value_at_risk(confidence=0.99))
+print("VaR (99%):", metrics.value_at_risk(confidence=0.99))
 
 # -------------------- DEBUG SECTION --------------------
 print("\n=== DEBUG INFO ===")

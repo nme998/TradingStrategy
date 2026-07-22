@@ -23,6 +23,7 @@ class Trade:
         self.exit_slippage = 0
         self.transaction_cost = 0
         self.pyramid = 0
+        self.max_risk = None
 
         self.holding_days = 0
 
@@ -58,6 +59,9 @@ class TradeManager:
         trade.trend = context.trend
         trade.score = score
 
+        trade.max_risk = abs(trade.entry_price - trade.stop_loss) * trade.size
+        self.engine.portfolio_risk += trade.max_risk
+
         side = "LONG" if direction == 1 else "SHORT"
         #print(f"{side} Signal: {ticker} |  Date: {context.date} | Price: {fill_price:.2f} | Size: {size:.2f} | SL: {stop_loss:.2f} | TP: {take_profit:.2f} | Confidence: {context.confidence:.2f}")
 
@@ -82,11 +86,86 @@ class TradeManager:
         gross_pnl = ((exit_fill - trade.entry_price) * trade.size * trade.direction)
         trade.pnl = gross_pnl - transaction_cost
         self.engine.capital += trade.pnl
+        self.engine.portfolio_risk -= trade.max_risk
 
         if ticker not in self.engine.closed_trades:
             self.engine.closed_trades[ticker] = []
 
         self.engine.closed_trades[ticker].append(trade)
 
-        print(f"[{ticker}] [{reason}] EntryDate ({trade.entry_date}) Entry {trade.entry_price:.2f} → ExitDate ({trade.exit_date}) Exit {price:.2f} | PnL {trade.pnl:.2f}")
-   
+        #print(f"[{ticker}] [{reason}] EntryDate ({trade.entry_date}) Entry {trade.entry_price:.2f} → ExitDate ({trade.exit_date}) Exit {price:.2f} | PnL {trade.pnl:.2f}")
+
+    def open_hedge(self,ticker, price, size, direction, date, linked_option_trade=None):
+        if size <= 0:
+            return None
+
+        trade = Trade(
+            entry_price=price,
+            size=size,
+            direction=direction,    
+            stop_loss=None,
+            take_profit=None,
+            entry_date=date,
+            strategy="HEDGE",
+            type="HEDGE",
+            pair_id=linked_option_trade.trade_id if linked_option_trade else None
+        )
+
+        slippage = price * self.engine.slippage_factor
+
+        if direction == 1:
+            fill = price + slippage
+        else:
+            fill = price - slippage
+
+        trade.entry_price = fill
+        trade.entry_slippage = slippage
+
+        trade.max_risk = fill * size
+
+        if ticker not in self.engine.open_trades:
+            self.engine.open_trades[ticker] = []
+
+        self.engine.open_trades[ticker].append(trade)
+
+        return trade
+    
+    def close_hedge(self, ticker, trade, price, date, reason="DELTA_REBALANCE"):
+        slippage = price * self.engine.slippage_factor
+
+        if trade.direction == 1:
+            fill = price - slippage
+        else:
+            fill = price + slippage
+
+        trade.exit_price = fill
+        trade.exit_date = date
+        trade.exit_slippage = slippage
+
+        trade.transaction_cost += (fill * trade.size * self.engine.transaction_cost_pct)
+
+        trade.pnl = (
+            (fill - trade.entry_price)
+            * trade.direction
+            * trade.size
+        ) - trade.transaction_cost
+
+        trade.is_open = False
+
+        self.engine.capital += trade.pnl
+
+        if ticker not in self.engine.closed_trades:
+            self.engine.closed_trades[ticker] = []
+
+        self.engine.closed_trades[ticker].append(trade)
+
+        if trade in self.engine.open_trades.get(ticker, []):
+            self.engine.open_trades[ticker].remove(trade)
+
+        print(
+            f"[{ticker}] [{reason}] "
+            f"HEDGE {'LONG' if trade.direction == 1 else 'SHORT'} | "
+            f"Entry {trade.entry_price:.2f} -> "
+            f"Exit {trade.exit_price:.2f} | "
+            f"PnL {trade.pnl:.2f}"
+        )

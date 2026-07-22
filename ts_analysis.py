@@ -219,6 +219,101 @@ year_stats = (
     .join(losses)
 )
 
+# =====================================================
+# PER STOCK PERFORMANCE
+# =====================================================
+
+stock_results = []
+
+for ticker, trades in df.groupby("ticker"):
+
+    trades = trades.sort_values("exit_date").copy()
+
+    # Basic stats
+    num_trades = len(trades)
+    total_pnl = trades["pnl"].sum()
+
+    wins = trades[trades["pnl"] > 0]
+    losses = trades[trades["pnl"] < 0]
+
+    num_wins = len(wins)
+    num_losses = len(losses)
+
+    win_rate = num_wins / num_trades * 100 if num_trades else 0
+
+    avg_holding = trades["holding_days"].mean()
+
+    # -----------------------------
+    # Drawdown
+    # -----------------------------
+    equity = trades["pnl"].cumsum()
+
+    running_max = equity.cummax()
+
+    drawdown = equity - running_max
+
+    max_drawdown = abs(drawdown.min())
+
+    # -----------------------------
+    # Profit Factor
+    # -----------------------------
+    gross_profit = wins["pnl"].sum()
+
+    gross_loss = abs(losses["pnl"].sum())
+
+    if gross_loss == 0:
+        profit_factor = np.inf
+    else:
+        profit_factor = gross_profit / gross_loss
+
+    # -----------------------------
+    # Annualized Return
+    # -----------------------------
+    if len(trades) > 1:
+
+        days = (
+            trades["exit_date"].max()
+            - trades["exit_date"].min()
+        ).days
+
+        if days > 0:
+            annual_return = total_pnl * (365 / days)
+        else:
+            annual_return = np.nan
+    else:
+        annual_return = np.nan
+
+    # -----------------------------
+    # Calmar Ratio
+    # -----------------------------
+    if max_drawdown > 0:
+        calmar = annual_return / max_drawdown
+    else:
+        calmar = np.nan
+
+    stock_results.append({
+        "Ticker": ticker,
+        "Trades": num_trades,
+        "Wins": num_wins,
+        "Losses": num_losses,
+        "Win Rate (%)": round(win_rate, 2),
+        "Total PnL": round(total_pnl, 2),
+        "Avg Holding Days": round(avg_holding, 2),
+        "Max Drawdown": round(max_drawdown, 2),
+        "Profit Factor": round(profit_factor, 2),
+        "Calmar": round(calmar, 2) if pd.notna(calmar) else np.nan
+    })
+
+stock_stats = (
+    pd.DataFrame(stock_results)
+      .sort_values("Total PnL", ascending=False)
+      .reset_index(drop=True)
+)
+
+print("\n========== PER STOCK PERFORMANCE ==========")
+print(stock_stats)
+
+
 print("\n--- YEARLY PNL ANALYSIS ---")
 print(year_stats)
 
@@ -347,3 +442,4 @@ for i, bucket in enumerate(labels):
 
 plt.tight_layout()
 plt.show()
+

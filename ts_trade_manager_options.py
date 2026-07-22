@@ -6,6 +6,7 @@ class OptionTrade:
         self.trade_id = OptionTrade.next_id
         OptionTrade.next_id += 1
 
+        self.option_type = option_type
         self.entry_price = entry_price
         self.premium_paid = entry_price * size * 100
         self.exit_price = None
@@ -21,8 +22,6 @@ class OptionTrade:
         self.exit_date = None
 
         self.is_open = True
-
-        self.option_type = option_type
         self.strike = None
         self.expiry = None
 
@@ -39,6 +38,7 @@ class OptionTrade:
         self.theta = None
         self.vega = None
         self.rho = None
+        self.max_risk = None
 
         self.prediction = None
         self.signal = None
@@ -81,10 +81,35 @@ class OptionTradeManager:
         premium_cost = context.option_price * size * 100
         self.engine.capital -= premium_cost
 
+        multiplier = trade.size * 100
+        trade.max_risk = premium_cost
+
+        self.engine.portfolio_delta += trade.delta * multiplier
+        self.engine.portfolio_gamma += trade.gamma * multiplier
+        self.engine.portfolio_theta += trade.theta * multiplier
+        self.engine.portfolio_vega += trade.vega * multiplier
+        self.engine.portfolio_risk += trade.max_risk
+        self.engine.portfolio_option_value -= trade.entry_price * multiplier
+
         if ticker not in self.engine.open_options_trades:
             self.engine.open_options_trades[ticker] = []
 
         self.engine.open_options_trades[ticker].append(trade)
+
+        return trade
+
+    def update_option_greeks(self, trade, delta, gamma, theta, vega):
+        multiplier = trade.size * 100
+
+        self.engine.portfolio_delta += (delta - trade.delta) * multiplier
+        self.engine.portfolio_gamma += (gamma - trade.gamma) * multiplier
+        self.engine.portfolio_theta += (theta - trade.theta) * multiplier
+        self.engine.portfolio_vega += (vega - trade.vega) * multiplier
+
+        trade.delta = delta
+        trade.gamma = gamma
+        trade.theta = theta
+        trade.vega = vega
 
 
     def close_option_trade(self, ticker, trade, option_price, underlying_price, date, reason):
@@ -99,13 +124,20 @@ class OptionTradeManager:
         trade.exit_price = exit_fill
         trade.exit_date = date
         trade.premium_received = exit_fill * trade.size *100
-
         trade.underlying_exit = underlying_price
-
-        # Option PnL
         trade.pnl = (exit_fill - trade.entry_price) * trade.size * 100
 
         self.engine.capital += trade.premium_received
+
+        multiplier = trade.size * 100
+        trade.max_risk = trade.premium_received
+
+        self.engine.portfolio_delta -= trade.delta * multiplier
+        self.engine.portfolio_gamma -= trade.gamma * multiplier
+        self.engine.portfolio_theta -= trade.theta * multiplier
+        self.engine.portfolio_vega -= trade.vega * multiplier
+        self.engine.portfolio_risk -= trade.premium_received
+        self.engine.portfolio_option_value -= trade.entry_price * multiplier
 
         if ticker not in self.engine.closed_options_trades:
             self.engine.closed_options_trades[ticker] = []
@@ -117,19 +149,19 @@ class OptionTradeManager:
             if trade in self.engine.open_options_trades[ticker]:
                 self.engine.open_options_trades[ticker].remove(trade)
 
-        print("Capital: ", self.engine.capital, "PnL: ", trade.pnl)
-'''
+
+
         print(
-            "DEBUG CLOSE:",
             ticker,
             "size:", trade.size,
             "premium_paid:", trade.premium_paid,
             "premium_received:", trade.premium_received,
+            "current_capital:", self.engine.capital,
             "entry:", trade.entry_price,
             "exit:", exit_fill,
             "pnl:", trade.pnl
         )
-
+'''
         print(
             f"[{ticker}] [{reason}] "
             f"{trade.option_type.upper()} "

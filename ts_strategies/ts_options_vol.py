@@ -3,6 +3,7 @@ from ts_strategies.ts_options.black_scholes import black_scholes_call, black_sch
 from ts_strategies.ts_options.greeks import calculate_delta, calculate_gamma, calculate_theta, calculate_vega
 from ts_strategies.ts_options.options_data_loader import OptionDataLoader
 from ts_trade_manager_options import OptionTradeManager
+from ts_trade_manager import TradeManager
 
 class OptionsTradeContext:
 
@@ -37,6 +38,7 @@ class OptionsVolatility:
 
         self.loader = OptionDataLoader()
         self.trade_manager = None
+        self.option_trade_manager = None
 
         self.max_entry_score = 7
         self.iv_threshold = iv_threshold
@@ -284,8 +286,27 @@ class OptionsVolatility:
                 expiry=expiry, time_to_expiry=time_to_expiry, delta=delta, gamma=gamma, theta=theta,
                 vega=vega, confidence=confidence, entry_score=entry_score, date=row.name)
 
-            self.trade_manager.open_option_trade(ticker=ticker, underlying_price=row["Close"], 
+            option_trade = self.option_trade_manager.open_option_trade(ticker=ticker, underlying_price=row["Close"], 
                                                  contract=contract, size=size, context=context)
+            
+            if option_type == "call":
+                self.trade_manager.open_hedge(
+                    ticker=ticker,
+                    price=row["Close"],
+                    size=size * 100,
+                    direction=-1,
+                    date=row.name,
+                    linked_option_trade=option_trade.trade_id
+                )
+            elif option_type == "put":
+                self.trade_manager.open_hedge(
+                    ticker=ticker,
+                    price=row["Close"],
+                    size=size * 100,
+                    direction=1,
+                    date=row.name,
+                    linked_option_trade=option_trade.trade_id
+                )
 
     def update_trades(self, engine, ticker, row, volatility_prediction, regime, lookback_windows):
 
@@ -351,25 +372,25 @@ class OptionsVolatility:
             if exit_score >= self.exit_threshold:
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
-                self.trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "EXIT_SCORE")
+                self.option_trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "EXIT_SCORE")
                 continue
 
             if unrealized_return >= 0.4:
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
-                self.trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "PROFIT_TARGET")
+                self.option_trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "PROFIT_TARGET")
                 continue
 
             if theta_ratio > 0.04:
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
-                self.trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "THETA_EXIT")
+                self.option_trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "THETA_EXIT")
                 continue
 
             if trade.time_to_expiry <= (5 / 252):
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
-                self.trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "EXPIRY")
+                self.option_trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "EXPIRY")
                 continue
 
             trade.current_price = option_price
