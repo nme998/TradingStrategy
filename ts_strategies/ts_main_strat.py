@@ -264,7 +264,7 @@ class MainStrat:
                 engine.stats["entries_skipped_trend"] += 1
                 continue
 
-            if (engine.current_total_risk() >= engine.max_total_risk):
+            if (engine.current_total_risk() >= engine.portfolio_risk):
                 continue
 
             engine.stats["entries_total"] += 1

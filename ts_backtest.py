@@ -37,7 +37,7 @@ class BacktestEngine(BacktestFunctions):
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.risk_per_trade = risk_per_trade
-        self.max_total_risk = 0.1
+        self.portfolio_risk = 0.1
 
         self.hmm_models = hmm_models
         self.down_states = down_states

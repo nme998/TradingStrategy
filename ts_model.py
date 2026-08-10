@@ -1,3 +1,4 @@
+import pandas as pd
 import numpy as np
 from xgboost import XGBRegressor
 from sklearn.preprocessing import MinMaxScaler
@@ -59,6 +60,24 @@ class XGBModel:
         pred_scaled = self.model.predict(X_scaled)
 
         # Inverse transform
+        pred = self.target_scaler.inverse_transform(pred_scaled)
+
+        return pred[0]
+
+    def validate(self, feature_row):
+
+        if isinstance(feature_row, pd.DataFrame):
+            X = feature_row.values
+        else:
+            X = np.asarray(feature_row)
+
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+
+        X_scaled = self.feature_scaler.transform(X)
+
+        pred_scaled = self.model.predict(X_scaled)
+
         pred = self.target_scaler.inverse_transform(pred_scaled)
 
         return pred[0]

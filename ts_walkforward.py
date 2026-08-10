@@ -9,104 +9,6 @@ from ts_strategies.ts_stat_arb import StatArb
 from ts_strategies.ts_main_strat import MainStrat
 from ts_options_features import (add_volatility_features, add_volatility_targets)
 
-def calculate_model_confidence(model, X_val, y_val, input_df):
-    """
-    Calculates model confidence based on historical validation performance.
-
-    Returns:
-    - direction_confidence: accuracy of predicting return direction
-    - magnitude_confidence: reliability of predicted return magnitude
-    - live prediction returns
-    """
-
-    # ==========================================
-    # Validation predictions
-    # ==========================================
-
-    val_predictions = model.predict(X_val)
-
-    # Convert to numpy
-    val_predictions = np.array(val_predictions)
-    y_val = np.array(y_val)
-
-
-    # ==========================================
-    # 1. Direction Confidence
-    # ==========================================
-
-    # Compare signs of predicted vs actual returns
-    predicted_direction = np.sign(val_predictions)
-    actual_direction = np.sign(y_val)
-
-    direction_accuracy = (
-        predicted_direction == actual_direction
-    ).mean()
-
-    direction_confidence = direction_accuracy * 100
-
-
-    # ==========================================
-    # 2. Magnitude Confidence
-    # ==========================================
-
-    # Absolute return prediction error
-    magnitude_error = np.abs(
-        val_predictions - y_val
-    )
-
-    mean_magnitude_error = magnitude_error.mean()
-
-    # Convert error into confidence
-    # Lower error = higher confidence
-    magnitude_confidence = max(
-        0,
-        min(
-            100,
-            (1 - mean_magnitude_error) * 100
-        )
-    )
-
-
-    # ==========================================
-    # Live prediction
-    # ==========================================
-
-    live_prediction = model.predict(input_df)
-
-    live_prediction = np.array(live_prediction)
-
-
-    live_direction = np.sign(
-        live_prediction
-    )
-
-
-    live_return = live_prediction.mean()
-
-
-    return {
-
-        # Confidence metrics
-        "direction_confidence": direction_confidence,
-
-        "magnitude_confidence": magnitude_confidence,
-
-
-        # Current prediction
-        "predicted_returns": live_prediction,
-
-        "predicted_return_mean": live_return,
-
-        "predicted_direction": live_direction,
-
-
-        # Debug metrics
-        "validation_direction_accuracy": direction_accuracy,
-
-        "mean_prediction_error": mean_magnitude_error
-    }
-
-
 def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback=50, rolling_years=5, trading_days_per_year=252):
     raw_data = {}
     for ticker in tickers:
@@ -274,6 +176,34 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
         train_vol_df = train_vol_df.dropna(subset=vol_target_cols)
         #///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+        print("\n================ DATASET DEBUG ================")
+
+        print(f"train_df shape: {train_df.shape}")
+        print(f"val_df   shape: {val_df.shape}")
+        print(f"X_val    shape: {X_val.shape}")
+        print(f"y_val    shape: {y_val.shape}")
+
+        print("\ntrain_df columns:")
+        print(train_df.columns.tolist())
+
+        print("\nval_df columns:")
+        print(val_df.columns.tolist())
+
+        print("\nX_val columns:")
+        print(X_val.columns.tolist())
+
+        print("\ny_val columns:")
+        print(y_val.columns.tolist())
+
+        print("\nFeature cols:")
+        print(feature_cols)
+
+        print(f"\nNumber of feature_cols: {len(feature_cols)}")
+        print(f"Number of train_df columns: {len(train_df.columns)}")
+        print(f"Number of X_val columns: {len(X_val.columns)}")
+        print(f"Number of y_val columns: {len(y_val.columns)}")
+
+        print("================================================\n")
         # =====================================================
         # TRAIN XGBOOST
         # =====================================================
@@ -286,18 +216,26 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
         vol_model.train(train_vol_df)
 
         val_predictions = []
+        '''
+        for i in range(len(val_df)):
+            # Features only → model input
+            X = X_val.iloc[[i]]          # or val_df.iloc[[i]][feature_cols]
 
-        for _, row in X_val.iterrows():
-            prediction = model.predict(row)
+            # Metadata / ground truth
+            ticker = val_df.iloc[i]["Ticker"]
+            actual = val_df.iloc[i][["target_1", "target_2", "target_3"]]
+            
+            prediction = model.validate(X.iloc[[0]])
 
             val_predictions.append({
-                "Ticker": row["Ticker"],
-                "Date": row.name,
+                "Ticker": ticker,
+                "Date": val_df.index[i],
                 "prediction": prediction,
-                "actual_1": row["target_1"],
-                "actual_2": row["target_2"],
-                "actual_3": row["target_3"]
+                "actual_1": actual["target_1"],
+                "actual_2": actual["target_2"],
+                "actual_3": actual["target_3"],
             })
+            '''
 
         # =====================================================
         # UPDATE ENGINE HMM AND LSTM MODELS
@@ -328,13 +266,9 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
             for _, row in date_df.iterrows():
                 ticker = row["Ticker"]
                 prediction = model.predict(row)
-                confidence = engine.calculate_model_confidence(
-                    model=model,
-                    X_val=X_val,
-                    y_val=y_val,
-                    input_df = row[feature_cols].to_frame().T
-                )
-                print(f"Confidence for {ticker} on {current_date}: {confidence['direction_confidence']} and {confidence['magnitude_confidence']}")
+
+                #confidence = engine.calculate_model_confidence(val_predictions=val_predictions, current_prediction = prediction)
+                #print(f"Confidence for {ticker} on {current_date}: {confidence['direction_confidence']} and {confidence['magnitude_confidence']}")
 
                 #/////////////////////////////////////////////////////////////////////////////////////////////////
                 vol_row = test_vol_df[
