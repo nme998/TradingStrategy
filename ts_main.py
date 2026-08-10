@@ -5,8 +5,8 @@ import pandas as pd
 import numpy as np
 from itertools import chain
 
-#tickers = ["AAPL", "MSFT", "AMZN", "NVDA", "AMD", "GOOGL", "META"]
-tickers = ["JPM", "BAC", "WFC", "C", "GS", "MS"]
+tickers = ["AAPL", "MSFT", "AMZN", "NVDA", "AMD", "GOOGL", "META"]
+#tickers = ["JPM", "BAC", "WFC", "C", "GS", "MS"]
 
 engine, all_predictions = run_walkforward_backtest(tickers)
 

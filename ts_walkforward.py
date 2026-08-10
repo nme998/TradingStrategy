@@ -18,8 +18,8 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
         raw_data[ticker] = df
 
     ##engine = BacktestEngine(initial_capital=initial_capital)
-    engine = BacktestEngine(initial_capital=initial_capital, strategy = OptionsVolatility())
-    #engine.strategy = MainStrat()
+    #engine = BacktestEngine(initial_capital=initial_capital, strategy = OptionsVolatility())
+    engine = BacktestEngine(initial_capital=initial_capital, strategy = MainStrat())
     #engine.strategy = StatArb(tickers=tickers)
 
     all_predictions = []
