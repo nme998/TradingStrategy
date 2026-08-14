@@ -231,19 +231,8 @@ class BacktestFunctions:
         return entropy
     
     def calculate_model_confidence(self, val_predictions, current_prediction):
-        predictions = np.array([
-            x["prediction"] for x in val_predictions
-        ])
-
-        actuals = np.array([
-            [
-                x["actual_1"],
-                x["actual_2"],
-                x["actual_3"]
-            ]
-            for x in val_predictions
-        ])
-
+        predictions = np.array([x["prediction"] for x in val_predictions])
+        actuals = np.array([[x["actual_1"], x["actual_2"],  x["actual_3"]] for x in val_predictions])
 
         # Direction confidence
         predicted_direction = np.sign(predictions)
@@ -254,19 +243,10 @@ class BacktestFunctions:
 
 
         # Magnitude confidence
-        magnitude_error = np.abs(
-            predictions - actuals
-        )
+        magnitude_error = np.abs(predictions - actuals)
 
         mean_magnitude_error = magnitude_error.mean()
-
-        magnitude_confidence = max(
-            0,
-            min(
-                100,
-                (1 - mean_magnitude_error) * 100
-            )
-        )
+        magnitude_confidence = max(0, min(100, (1 - mean_magnitude_error) * 100))
 
 
         return {

@@ -133,7 +133,6 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
         # =====================================================
         # FORCE COLUMN ORDER
         # =====================================================
-        validation_size = 250 * len(tickers)
         target_cols = ["target_1", "target_2", "target_3"]
         feature_cols = [c for c in train_df.columns if c not in (target_cols + ["Ticker"])]
 
@@ -142,13 +141,8 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
  
         train_df = train_df.replace([np.inf, -np.inf], np.nan)
         test_df = test_df.replace([np.inf, -np.inf], np.nan)
+        print(train_df.head(20))
 
-        validation_size = 250 * len(tickers)
-        val_df = train_df.tail(validation_size).copy()
-        train_df = train_df.iloc[:-validation_size].copy()
-
-        X_val = val_df[feature_cols].copy()
-        y_val = val_df[target_cols]
 
         train_df = train_df.dropna(subset=["target_1", "target_2", "target_3"])
 
@@ -179,29 +173,16 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
         print("\n================ DATASET DEBUG ================")
 
         print(f"train_df shape: {train_df.shape}")
-        print(f"val_df   shape: {val_df.shape}")
-        print(f"X_val    shape: {X_val.shape}")
-        print(f"y_val    shape: {y_val.shape}")
 
         print("\ntrain_df columns:")
         print(train_df.columns.tolist())
 
-        print("\nval_df columns:")
-        print(val_df.columns.tolist())
-
-        print("\nX_val columns:")
-        print(X_val.columns.tolist())
-
-        print("\ny_val columns:")
-        print(y_val.columns.tolist())
 
         print("\nFeature cols:")
         print(feature_cols)
 
         print(f"\nNumber of feature_cols: {len(feature_cols)}")
         print(f"Number of train_df columns: {len(train_df.columns)}")
-        print(f"Number of X_val columns: {len(X_val.columns)}")
-        print(f"Number of y_val columns: {len(y_val.columns)}")
 
         print("================================================\n")
         # =====================================================
@@ -214,28 +195,6 @@ def run_walkforward_backtest(tickers, initial_capital=10000, n_folds=5, lookback
 
         vol_model = XGBModel(n_forecast=3)
         vol_model.train(train_vol_df)
-
-        val_predictions = []
-        '''
-        for i in range(len(val_df)):
-            # Features only → model input
-            X = X_val.iloc[[i]]          # or val_df.iloc[[i]][feature_cols]
-
-            # Metadata / ground truth
-            ticker = val_df.iloc[i]["Ticker"]
-            actual = val_df.iloc[i][["target_1", "target_2", "target_3"]]
-            
-            prediction = model.validate(X.iloc[[0]])
-
-            val_predictions.append({
-                "Ticker": ticker,
-                "Date": val_df.index[i],
-                "prediction": prediction,
-                "actual_1": actual["target_1"],
-                "actual_2": actual["target_2"],
-                "actual_3": actual["target_3"],
-            })
-            '''
 
         # =====================================================
         # UPDATE ENGINE HMM AND LSTM MODELS
