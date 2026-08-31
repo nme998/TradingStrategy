@@ -24,6 +24,7 @@ class Trade:
         self.transaction_cost = 0
         self.pyramid = 0
         self.max_risk = None
+        self.linked_option_trade = None
 
         self.holding_days = 0
 
@@ -33,6 +34,43 @@ class Trade:
         self.regime = None
         self.entropy = None
         self.trend = None
+
+
+class HedgePosition:
+    next_id = 0
+
+    def __init__(self, ticker, option_trade_id, quantity, entry_price, entry_date):
+        self.hedge_id = HedgePosition.next_id
+        HedgePosition.next_id += 1
+
+        self.ticker = ticker
+        self.pair_id = option_trade_id
+
+        # Signed:
+        # +50 = long 50 shares
+        # -50 = short 50 shares
+        self.quantity = quantity
+
+        self.average_entry_price = entry_price
+        self.current_price = entry_price
+
+        self.entry_date = entry_date
+        self.last_update_date = entry_date
+
+        self.realized_pnl = 0.0
+        self.transaction_cost = 0.0
+
+        self.is_open = True
+
+    @property
+    def unrealized_pnl(self):
+        return (
+            self.current_price - self.average_entry_price
+        ) * self.quantity
+
+    @property
+    def total_pnl(self):
+        return self.realized_pnl + self.unrealized_pnl
 
 class TradeManager:
 
@@ -95,77 +133,192 @@ class TradeManager:
 
         #print(f"[{ticker}] [{reason}] EntryDate ({trade.entry_date}) Entry {trade.entry_price:.2f} → ExitDate ({trade.exit_date}) Exit {price:.2f} | PnL {trade.pnl:.2f}")
 
-    def open_hedge(self,ticker, price, size, direction, date, linked_option_trade=None):
-        if size <= 0:
+    def open_hedge(self, ticker, price, quantity, date, linked_option_trade):
+        if abs(quantity) <= 0:
             return None
 
-        trade = Trade(
-            entry_price=price,
-            size=size,
-            direction=direction,    
-            stop_loss=None,
-            take_profit=None,
-            entry_date=date,
-            strategy="HEDGE",
-            type="HEDGE",
-            pair_id=linked_option_trade.trade_id if linked_option_trade else None
-        )
-
         slippage = price * self.engine.slippage_factor
 
-        if direction == 1:
+        if quantity > 0:
+            # Buying stock
             fill = price + slippage
         else:
+            # Selling / shorting stock
             fill = price - slippage
 
-        trade.entry_price = fill
-        trade.entry_slippage = slippage
+        hedge = HedgePosition(ticker=ticker, option_trade_id=linked_option_trade.trade_id, quantity=quantity, entry_price=fill, entry_date=date)
 
-        trade.max_risk = fill * size
+        if ticker not in self.engine.open_hedges:
+            self.engine.open_hedges[ticker] = []
 
-        if ticker not in self.engine.open_trades:
-            self.engine.open_trades[ticker] = []
+        self.engine.open_hedges[ticker].append(hedge)
 
-        self.engine.open_trades[ticker].append(trade)
+        # Stock has delta of 1 per share
+        self.engine.portfolio_delta += quantity
 
-        return trade
+        return hedge
     
-    def close_hedge(self, ticker, trade, price, date, reason="DELTA_REBALANCE"):
+    def close_hedge(self, ticker, hedge, price, date, reason="OPTION_CLOSE"):
+        if not hedge.is_open:
+            return
+
+        quantity = hedge.quantity
+
+        if quantity == 0:
+            return
+
         slippage = price * self.engine.slippage_factor
 
-        if trade.direction == 1:
+        if quantity > 0:
+            # Sell long shares
             fill = price - slippage
+
+            pnl = (
+                fill - hedge.average_entry_price
+            ) * quantity
+
         else:
+            # Buy back short shares
             fill = price + slippage
 
-        trade.exit_price = fill
-        trade.exit_date = date
-        trade.exit_slippage = slippage
+            pnl = (hedge.average_entry_price - fill) * abs(quantity)
 
-        trade.transaction_cost += (fill * trade.size * self.engine.transaction_cost_pct)
+        transaction_cost = (abs(quantity) * fill * self.engine.transaction_cost_pct)
 
-        trade.pnl = (
-            (fill - trade.entry_price)
-            * trade.direction
-            * trade.size
-        ) - trade.transaction_cost
+        net_pnl = pnl - transaction_cost
 
-        trade.is_open = False
+        hedge.realized_pnl += net_pnl
+        hedge.transaction_cost += transaction_cost
 
-        self.engine.capital += trade.pnl
+        hedge.current_price = price
 
-        if ticker not in self.engine.closed_trades:
-            self.engine.closed_trades[ticker] = []
+        # Remove hedge delta from portfolio
+        self.engine.portfolio_delta -= quantity
 
-        self.engine.closed_trades[ticker].append(trade)
+        # Add ONLY this final realised PnL
+        self.engine.capital += net_pnl
 
-        if trade in self.engine.open_trades.get(ticker, []):
-            self.engine.open_trades[ticker].remove(trade)
+        hedge.quantity = 0
+        hedge.is_open = False
+        hedge.last_update_date = date
+
+        if ticker in self.engine.open_hedges:
+            if hedge in self.engine.open_hedges[ticker]:
+                self.engine.open_hedges[ticker].remove(hedge)
+
+        if ticker not in self.engine.closed_hedges:
+            self.engine.closed_hedges[ticker] = []
+
+        self.engine.closed_hedges[ticker].append(hedge)
 
         print(
-            f"[{ticker}] [{reason}] "
-            f"HEDGE {'LONG' if trade.direction == 1 else 'SHORT'} | "
-            f"Entry {trade.entry_price:.2f} -> "
-            f"Exit {trade.exit_price:.2f} | "
-            f"PnL {trade.pnl:.2f}"
+            f"[{ticker}] [{reason}] HEDGE "
+            f"PnL {net_pnl:.2f} | "
+            f"Total hedge PnL {hedge.realized_pnl:.2f}"
         )
+
+    def rebalance_hedge(self, ticker, hedge, target_quantity, price, date):
+        current_quantity = hedge.quantity
+
+        if abs(target_quantity - current_quantity) < 1e-8:
+            hedge.current_price = price
+            hedge.last_update_date = date
+            return
+
+        adjustment = target_quantity - current_quantity
+
+        slippage = price * self.engine.slippage_factor
+
+        # ---------------------------------------------------------
+        # Determine fill price
+        # ---------------------------------------------------------
+
+        if adjustment > 0:
+            fill = price + slippage
+        else:
+            fill = price - slippage
+
+        closing_quantity = 0.0
+        opening_quantity = 0.0
+
+        # Same direction -> entirely opening
+        if current_quantity == 0:
+            opening_quantity = abs(adjustment)
+
+        elif current_quantity > 0 and adjustment > 0:
+            # Long -> longer
+            opening_quantity = adjustment
+
+        elif current_quantity < 0 and adjustment < 0:
+            # Short -> more short
+            opening_quantity = abs(adjustment)
+
+        else:
+            # We're reducing or reversing the existing position
+            closing_quantity = min(
+                abs(current_quantity),
+                abs(adjustment)
+            )
+
+            # If adjustment is larger than existing position,
+            # the remainder opens the opposite side
+            opening_quantity = max(
+                abs(adjustment) - abs(current_quantity),
+                0
+            )
+
+        # ---------------------------------------------------------
+        # Realise PnL on the portion being closed
+        # ---------------------------------------------------------
+
+        realized_pnl = 0.0
+
+        if closing_quantity > 0:
+            if current_quantity > 0:
+                # Closing a LONG
+                realized_pnl = (fill - hedge.average_entry_price) * closing_quantity
+
+            else:
+                # Closing a SHORT
+                realized_pnl = (hedge.average_entry_price - fill) * closing_quantity
+
+
+        transaction_cost = (abs(adjustment) * fill * self.engine.transaction_cost_pct)
+        net_realized_pnl = realized_pnl - transaction_cost
+
+        hedge.realized_pnl += net_realized_pnl
+        hedge.transaction_cost += transaction_cost
+
+        self.engine.capital += net_realized_pnl
+
+        # If we are adding to the same position
+        if (current_quantity > 0 and target_quantity > current_quantity):
+            old_value = (current_quantity * hedge.average_entry_price)
+            new_value = (opening_quantity * fill)
+
+            hedge.average_entry_price = (old_value + new_value) / target_quantity
+
+        elif (current_quantity < 0 and target_quantity < current_quantity):
+            old_abs_quantity = abs(current_quantity)
+
+            old_value = (old_abs_quantity * hedge.average_entry_price)
+
+            new_value = (opening_quantity * fill)
+
+            hedge.average_entry_price = (old_value + new_value) / abs(target_quantity)
+
+        # If we've completely closed and opened the opposite direction
+        elif (current_quantity > 0 and target_quantity < 0):
+            hedge.average_entry_price = fill
+
+        elif (current_quantity < 0 and target_quantity > 0):
+            hedge.average_entry_price = fill
+
+        elif current_quantity == 0:
+            hedge.average_entry_price = fill
+
+        self.engine.portfolio_delta += (target_quantity - current_quantity)
+
+        hedge.quantity = target_quantity
+        hedge.current_price = price
+        hedge.last_update_date = date

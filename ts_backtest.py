@@ -27,29 +27,35 @@ class BacktestEngine(BacktestFunctions):
                  hmm_models=None, down_states=None, up_states=None, 
                  lstm_models=None, lstm_scalers=None, strategy=None):
 
-        self.strategy = strategy or MainStrat()
-        if isinstance(self.strategy, OptionsVolatility):
-            self.trade_manager = OptionTradeManager(self)
-        else:
-            self.trade_manager = TradeManager(self)
-
+        self.strategy = strategy
+        self.option_trade_manager = OptionTradeManager(self)
+        self.trade_manager = TradeManager(self)
+        self.strategy.option_trade_manager = self.option_trade_manager
         self.strategy.trade_manager = self.trade_manager
+
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.risk_per_trade = risk_per_trade
         self.portfolio_risk = 0.1
+        self.portfolio_delta = 0
+        self.portfolio_gamma = 0
+        self.portfolio_theta = 0
+        self.portfolio_vega = 0
+        self.portfolio_option_value = 0
 
         self.hmm_models = hmm_models
-        self.down_states = down_states
+        self.down_states = down_states  
         self.up_states = up_states
 
         self.lstm_models = lstm_models
         self.lstm_scalers = lstm_scalers
 
         self.open_trades = {}
-        self.open_options_trades = {}
         self.closed_trades = {}
+        self.open_options_trades = {}
         self.closed_options_trades = {}
+        self.open_hedges = {}
+        self.closed_hedges = {}
 
         self.equity_curve = []
         self.dates = []
@@ -190,5 +196,3 @@ class BacktestEngine(BacktestFunctions):
         print("\n=== TRADE DEBUG STATS ===")
         for k, v in self.stats.items():
             print(f"{k}: {v}")
-
-#TODO: Add pair trading strategy

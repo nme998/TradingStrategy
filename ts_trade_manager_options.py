@@ -47,6 +47,41 @@ class OptionTrade:
         self.entropy = None
         self.trend = None
 
+class HedgePosition:
+    next_id = 0
+
+    def __init__(self, ticker, option_trade_id, quantity, entry_price, entry_date):
+        self.hedge_id = HedgePosition.next_id
+        HedgePosition.next_id += 1
+
+        self.ticker = ticker
+        self.pair_id = option_trade_id
+
+        # Signed:
+        # +50 = long 50 shares
+        # -50 = short 50 shares
+        self.quantity = quantity
+
+        self.average_entry_price = entry_price
+        self.current_price = entry_price
+
+        self.entry_date = entry_date
+        self.last_update_date = entry_date
+
+        self.realized_pnl = 0.0
+        self.transaction_cost = 0.0
+
+        self.is_open = True
+
+    @property
+    def unrealized_pnl(self):
+        return (
+            self.current_price - self.average_entry_price
+        ) * self.quantity
+
+    @property
+    def total_pnl(self):
+        return self.realized_pnl + self.unrealized_pnl
 
 class OptionTradeManager:
 
@@ -161,7 +196,7 @@ class OptionTradeManager:
             "exit:", exit_fill,
             "pnl:", trade.pnl
         )
-'''
+        '''
         print(
             f"[{ticker}] [{reason}] "
             f"{trade.option_type.upper()} "
@@ -175,4 +210,6 @@ class OptionTradeManager:
         )
         print("Current Capital:", self.engine.capital, " | Open Trades:", len(self.engine.open_options_trades.get(ticker, [])), 
               " | Closed Trades:", len(self.engine.closed_options_trades.get(ticker, [])))
-'''
+        '''
+
+    

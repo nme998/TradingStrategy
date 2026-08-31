@@ -190,6 +190,15 @@ class OptionsVolatility:
         #print(f"Calculated position size: {contracts} contracts for option price {option_price:.2f}, confidence {confidence:.2f}, entry score {entry_score}, risk amount {risk_amount:.2f}, max contracts {max_contracts}")
 
         return min(50, int(contracts))
+
+    def close_option_and_hedge(self, engine,ticker, option_trade, option_price, underlying_price, date, reason):
+        self.option_trade_manager.close_option_trade(ticker, option_trade, option_price, underlying_price, date, reason)
+
+        # Find and close the corresponding hedge
+        for hedge in engine.open_trades.get(ticker, []):
+            if hedge.pair_id == option_trade.trade_id:
+                self.trade_manager.close_hedge(ticker, hedge, underlying_price, date, reason)
+                break
     
     def process_entries(self, engine, rows, volatility_predictions, return_predictions, regime, lookback_windows):
         
@@ -289,24 +298,15 @@ class OptionsVolatility:
             option_trade = self.option_trade_manager.open_option_trade(ticker=ticker, underlying_price=row["Close"], 
                                                  contract=contract, size=size, context=context)
             
-            if option_type == "call":
-                self.trade_manager.open_hedge(
-                    ticker=ticker,
-                    price=row["Close"],
-                    size=size * 100,
-                    direction=-1,
-                    date=row.name,
-                    linked_option_trade=option_trade.trade_id
-                )
-            elif option_type == "put":
-                self.trade_manager.open_hedge(
-                    ticker=ticker,
-                    price=row["Close"],
-                    size=size * 100,
-                    direction=1,
-                    date=row.name,
-                    linked_option_trade=option_trade.trade_id
-                )
+            hedge_quantity = -option_trade.delta * option_trade.size * 100
+
+            self.trade_manager.open_hedge(
+                ticker=ticker,
+                price=row["Close"],
+                quantity=hedge_quantity,
+                date=row.name,
+                linked_option_trade=option_trade
+            )
 
     def update_trades(self, engine, ticker, row, volatility_prediction, regime, lookback_windows):
 
@@ -348,11 +348,34 @@ class OptionsVolatility:
             delta = calculate_delta(stock_price, trade.strike, trade.time_to_expiry, 
                                     self.risk_free_rate, predicted_vol, trade.option_type)
 
+            gamma = calculate_gamma(stock_price, trade.strike, trade.time_to_expiry,
+                                    self.risk_free_rate, predicted_vol)
+
             theta = calculate_theta(stock_price, trade.strike, trade.time_to_expiry,
                                     self.risk_free_rate, predicted_vol, trade.option_type)
 
             vega = calculate_vega(stock_price, trade.strike, trade.time_to_expiry,
                                     self.risk_free_rate, predicted_vol)
+
+            self.option_trade_manager.update_option_greeks(trade, delta, gamma, theta, vega)
+
+            hedge = None
+
+            for h in engine.open_hedges.get(ticker, []):
+                if h.pair_id == trade.trade_id:
+                    hedge = h
+                    break
+
+            if hedge is not None:
+                target_hedge_quantity = (-delta * trade.size * 100)
+
+                self.trade_manager.rebalance_hedge(
+                    ticker=ticker,
+                    hedge=hedge,
+                    target_quantity=target_hedge_quantity,
+                    price=stock_price,
+                    date=row.name
+                )
 
             confidence = self.calculate_confidence(
                 predicted_vol - implied_vol,
@@ -372,25 +395,25 @@ class OptionsVolatility:
             if exit_score >= self.exit_threshold:
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
-                self.option_trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "EXIT_SCORE")
+                self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "EXIT_SCORE")
                 continue
 
             if unrealized_return >= 0.4:
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
-                self.option_trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "PROFIT_TARGET")
+                self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "PROFIT_TARGET")
                 continue
 
             if theta_ratio > 0.04:
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
-                self.option_trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "THETA_EXIT")
+                self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "THETA_EXIT")
                 continue
 
             if trade.time_to_expiry <= (5 / 252):
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
-                self.option_trade_manager.close_option_trade(ticker, trade, option_price, row["Close"], row.name, "EXPIRY")
+                self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "EXPIRY")
                 continue
 
             trade.current_price = option_price

@@ -107,6 +107,7 @@ conf_stats["win_rate"] = (
 
 print(conf_stats)
 
+'''
 df["score_decile"] = pd.qcut(df["score"], 10, duplicates="drop")
 
 score_stats = df.groupby("score_decile")["pnl"].agg(
@@ -123,7 +124,7 @@ score_stats["win_rate"] = (
 )
 
 print(score_stats)
-
+'''
 df["exit_date"] = pd.to_datetime(df["exit_date"])
 df["month"] = df["exit_date"].dt.month
 
