@@ -85,10 +85,10 @@ class OptionsVolatility:
 
         vol_edge = predicted_vol - implied_vol
 
-        if abs(vol_edge) > 0.03:
+        if vol_edge > 0.05:
             score += 2
 
-        if abs(vol_edge) > 0.05:
+        if vol_edge > 0.07:
             score += 1
 
 
@@ -104,7 +104,7 @@ class OptionsVolatility:
         greek_quality = True
 
         # Avoid options with almost no exposure
-        if abs(delta) < 0.20:
+        if abs(delta) < 0.60:
             greek_quality = False
 
         # Avoid contracts with almost no volatility sensitivity
@@ -124,9 +124,9 @@ class OptionsVolatility:
 
         score = 0
 
-        vol_edge = abs(predicted_vol - implied_vol)
+        vol_edge = predicted_vol - implied_vol
 
-        if vol_edge < 0.01:
+        if vol_edge < 0.02:
             score += 2
 
         if bs_price <= 0:
@@ -157,7 +157,7 @@ class OptionsVolatility:
 
         greek_score = 0.0
 
-        if abs(delta) >= 0.20:
+        if abs(delta) >= 0.60:
             greek_score += 0.40
 
         if abs(vega) >= 0.05:
@@ -258,17 +258,11 @@ class OptionsVolatility:
                 entry_score = self.compute_entry_score(predicted_vol, implied_vol, option_price, 
                                                  bs_price, delta, theta, vega, regime)
 
-                if entry_score < engine.entry_threshold:
+                if entry_score < 1: #engine.entry_threshold:
                     break
 
-                confidence = self.calculate_confidence(
-                    predicted_vol - implied_vol,
-                    (option_price - bs_price) / bs_price,
-                    delta,
-                    theta,
-                    vega,
-                    regime
-                )
+                confidence = self.calculate_confidence(predicted_vol - implied_vol, (option_price - bs_price) / bs_price,
+                                                delta, theta, vega, regime)
 
                 if (confidence >= 0.99 and entry_score == self.max_entry_score and contract.get("selection") != "OTM"):
                     new_contract = self.loader.generate_contract(stock_price=stock_price, current_date=row.name, 
@@ -281,7 +275,7 @@ class OptionsVolatility:
 
                 break
 
-            if entry_score < engine.entry_threshold:
+            if entry_score < 1: #engine.entry_threshold:
                 continue
 
             size = self.calculate_position_size(engine, option_price, confidence, entry_score)
@@ -410,7 +404,7 @@ class OptionsVolatility:
                 self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "THETA_EXIT")
                 continue
 
-            if trade.time_to_expiry <= (5 / 252):
+            if trade.time_to_expiry <= (15 / 252):
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
                 self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "EXPIRY")

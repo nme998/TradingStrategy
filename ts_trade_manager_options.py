@@ -20,6 +20,7 @@ class OptionTrade:
 
         self.entry_date = entry_date
         self.exit_date = None
+        self.exit_reason = None
 
         self.is_open = True
         self.strike = None
@@ -161,6 +162,7 @@ class OptionTradeManager:
         trade.premium_received = exit_fill * trade.size *100
         trade.underlying_exit = underlying_price
         trade.pnl = (exit_fill - trade.entry_price) * trade.size * 100
+        trade.exit_reason = reason
 
         self.engine.capital += trade.premium_received
 
