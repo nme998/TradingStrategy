@@ -85,10 +85,10 @@ class OptionsVolatility:
 
         vol_edge = predicted_vol - implied_vol
 
-        if vol_edge > 0.05:
+        if vol_edge > 0.02:
             score += 2
 
-        if vol_edge > 0.07:
+        if vol_edge > 0.03:
             score += 1
 
 
@@ -104,7 +104,7 @@ class OptionsVolatility:
         greek_quality = True
 
         # Avoid options with almost no exposure
-        if abs(delta) < 0.60:
+        if abs(delta) < 0.30:
             greek_quality = False
 
         # Avoid contracts with almost no volatility sensitivity
@@ -120,13 +120,13 @@ class OptionsVolatility:
 
         return score
     
-    def compute_exit_score( self,  predicted_vol,  implied_vol,  market_option_price,  bs_price,  confidence,  theta):
+    def compute_exit_score(self,  predicted_vol,  implied_vol,  market_option_price,  bs_price,  confidence,  theta):
 
         score = 0
 
         vol_edge = predicted_vol - implied_vol
 
-        if vol_edge < 0.02:
+        if vol_edge < 0.01:
             score += 2
 
         if bs_price <= 0:
@@ -157,7 +157,7 @@ class OptionsVolatility:
 
         greek_score = 0.0
 
-        if abs(delta) >= 0.60:
+        if abs(delta) >= 0.30:
             greek_score += 0.40
 
         if abs(vega) >= 0.05:
@@ -231,10 +231,15 @@ class OptionsVolatility:
                 expiry = contract["expiry"]
                 option_type = contract["optionType"]
                 time_to_expiry = contract["time_to_expiry"]
+
                 historical_vol = lookback_windows[ticker].iloc[-1]["rv20"]
-                vrp = 0.15 * historical_vol
+                recent_window = lookback_windows[ticker].iloc[-5:]  # Look at the last week of data
+                log_hl = np.log(recent_window['High'] / recent_window['Low'])
+                intraday_vol_proxy = np.sqrt((0.5 * (log_hl ** 2)).mean() * 252)
+                vrp = 0.05 * np.exp(-((historical_vol - 0.10) / 0.15) ** 2) + 0.02 * historical_vol
                 noise = np.random.normal(0, 0.02)
-                implied_vol = historical_vol + vrp + noise
+                base_vol = max(historical_vol, intraday_vol_proxy)
+                implied_vol = base_vol + vrp + noise
                 implied_vol = max(implied_vol, 0.05)
 
                 if option_type == "call":
@@ -256,17 +261,17 @@ class OptionsVolatility:
                 theta = calculate_theta(stock_price, strike, time_to_expiry, self.risk_free_rate, predicted_vol, option_type)
                 vega = calculate_vega(stock_price, strike, time_to_expiry, self.risk_free_rate, predicted_vol)
                 entry_score = self.compute_entry_score(predicted_vol, implied_vol, option_price, 
-                                                 bs_price, delta, theta, vega, regime)
+                                                    bs_price, delta, theta, vega, regime)
 
                 if entry_score < 1: #engine.entry_threshold:
                     break
 
                 confidence = self.calculate_confidence(predicted_vol - implied_vol, (option_price - bs_price) / bs_price,
-                                                delta, theta, vega, regime)
+                                                    delta, theta, vega, regime)
 
                 if (confidence >= 0.99 and entry_score == self.max_entry_score and contract.get("selection") != "OTM"):
                     new_contract = self.loader.generate_contract(stock_price=stock_price, current_date=row.name, 
-                                                     option_type=option_type, mode="OTM")
+                                                    option_type=option_type, mode="OTM")
 
                     if new_contract is not None:
                         new_contract["selection"] = "OTM"
@@ -290,7 +295,7 @@ class OptionsVolatility:
                 vega=vega, confidence=confidence, entry_score=entry_score, date=row.name)
 
             option_trade = self.option_trade_manager.open_option_trade(ticker=ticker, underlying_price=row["Close"], 
-                                                 contract=contract, size=size, context=context)
+                                                    contract=contract, size=size, context=context)
             
             hedge_quantity = -option_trade.delta * option_trade.size * 100
 
@@ -326,9 +331,13 @@ class OptionsVolatility:
             #contract = contract.iloc[0]
 
             historical_vol = lookback_windows[ticker].iloc[-1]["rv20"]
-            vrp = 0.15 * historical_vol
+            recent_window = lookback_windows[ticker].iloc[-5:]  # Look at the last week of data
+            log_hl = np.log(recent_window['High'] / recent_window['Low'])
+            intraday_vol_proxy = np.sqrt((0.5 * (log_hl ** 2)).mean() * 252)
+            vrp = 0.05 * np.exp(-((historical_vol - 0.10) / 0.15) ** 2) + 0.02 * historical_vol
             noise = np.random.normal(0, 0.02)
-            implied_vol = historical_vol + vrp + noise
+            base_vol = max(historical_vol, intraday_vol_proxy)
+            implied_vol = base_vol + vrp + noise
             implied_vol = max(implied_vol, 0.05)
 
             if trade.option_type == "call":
@@ -363,27 +372,16 @@ class OptionsVolatility:
             if hedge is not None:
                 target_hedge_quantity = (-delta * trade.size * 100)
 
-                self.trade_manager.rebalance_hedge(
-                    ticker=ticker,
-                    hedge=hedge,
-                    target_quantity=target_hedge_quantity,
-                    price=stock_price,
-                    date=row.name
-                )
+                self.trade_manager.rebalance_hedge(ticker=ticker, hedge=hedge, target_quantity=target_hedge_quantity,
+                                                price=stock_price, date=row.name)
 
-            confidence = self.calculate_confidence(
-                predicted_vol - implied_vol,
-                (option_price - trade.entry_price) / trade.entry_price,
-                delta,
-                theta,
-                vega,
-                regime
-            )
+            confidence = self.calculate_confidence(predicted_vol - implied_vol, (option_price - trade.entry_price) / trade.entry_price,
+                                                delta, theta, vega, regime)
 
             unrealized_return = (option_price - trade.entry_price) / trade.entry_price
 
             exit_score = self.compute_exit_score(predicted_vol, implied_vol, option_price,
-                                                    trade.entry_price, confidence, theta)
+                                                trade.entry_price, confidence, theta)
             theta_ratio = abs(theta) / option_price
 
             if exit_score >= self.exit_threshold:
@@ -398,13 +396,13 @@ class OptionsVolatility:
                 self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "PROFIT_TARGET")
                 continue
 
-            if theta_ratio > 0.04:
+            if theta_ratio > 0.02:
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
                 self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "THETA_EXIT")
                 continue
 
-            if trade.time_to_expiry <= (15 / 252):
+            if trade.time_to_expiry <= (5 / 252):
                 trade.exit_implied_vol = implied_vol
                 trade.exit_predicted_vol = predicted_vol
                 self.close_option_and_hedge(engine, ticker, trade, option_price, row["Close"], row.name, "EXPIRY")
